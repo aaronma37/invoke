@@ -128,6 +128,8 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
             std.debug.print("\n[Kernel] RECOVERY (Frame {d}): A Node attempted a memory violation! Motherboard survives.\n", .{frame_count});
         }
         is_recovering = false;
+
+        orch.swapAllWires();
         
         // 3. Monitor
         if (orch.getWire("player.stats")) |w| {
@@ -163,12 +165,23 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
             var wire_it = wires.object.iterator();
             while (wire_it.next()) |w_entry| {
                 const w_name = w_entry.key_ptr.*;
-                const w_schema = w_entry.value_ptr.*.string;
+                var w_schema: []const u8 = undefined;
+                var w_buffered = false;
+
+                if (w_entry.value_ptr.* == .string) {
+                    w_schema = w_entry.value_ptr.*.string;
+                } else {
+                    w_schema = w_entry.value_ptr.*.object.get("schema").?.string;
+                    if (w_entry.value_ptr.*.object.get("buffered")) |b| {
+                        w_buffered = b.bool;
+                    }
+                }
+
                 const full_path = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_name, w_name });
                 defer allocator.free(full_path);
                 const w_existed = orch.getWire(full_path) != null;
                 const size = schema.CalculateSchemaSize(w_schema);
-                const w = try orch.addWire(full_path, w_schema, size);
+                const w = try orch.addWire(full_path, w_schema, size, w_buffered);
                 
                 // Initialize health if it's a NEW player.stats wire
                 if (!w_existed and std.mem.eql(u8, full_path, "player.stats")) {
@@ -201,7 +214,13 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
         if (ns_entry.value_ptr.*.object.get("wires")) |wires| {
             var wire_it = wires.object.iterator();
             while (wire_it.next()) |w_entry| {
-                const w_schema = w_entry.value_ptr.*.string;
+                var w_schema: []const u8 = undefined;
+                if (w_entry.value_ptr.* == .string) {
+                    w_schema = w_entry.value_ptr.*.string;
+                } else {
+                    w_schema = w_entry.value_ptr.*.object.get("schema").?.string;
+                }
+
                 const full_path = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_name, w_entry.key_ptr.* });
                 defer allocator.free(full_path);
                 const struct_def = try schema.generateCStruct(allocator, full_path, w_schema);
@@ -263,7 +282,7 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
                                     defer allocator.free(safe_ref);
                                     for (safe_ref) |*char| if (char.* == '.') { char.* = '_'; };
                                     try guest_offsets.writer().print("#define OFFSET_{s} 0x{X}\n", .{ safe_ref, current_offset });
-                                    current_offset += (w.buffer.len + 15) & ~@as(usize, 15);
+                                    current_offset += (w.size + 15) & ~@as(usize, 15);
                                 }
                             }
                         }

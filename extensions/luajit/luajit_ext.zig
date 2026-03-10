@@ -73,9 +73,9 @@ export fn destroy_node(handle: abi.invoke_node_h) void {
     node.deinit();
 }
 
-export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopaque, size: usize) abi.invoke_status_t {
+export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopaque, access: usize) abi.invoke_status_t {
     const node: *LuaNode = @ptrCast(@alignCast(handle));
-    _ = size;
+    _ = access;
 
     c.lua_pushlightuserdata(node.L, ptr);
     

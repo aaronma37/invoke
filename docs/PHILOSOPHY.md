@@ -20,14 +20,20 @@ Invoke is designed for a world where AI is the primary author of code.
 * **The Worker (Micro):** Writes tiny, stateless Lua scripts inside the nodes.
 * **Infinite Iteration:** Because Wires hold the state, you can swap Lua logic a thousand times a minute. The AI "sculpts" the behavior of the system in real-time.
 
-## IV. Summary of the "Invoke Handshake"
-| Component | Language | Knowledge of `lua.h` | Knowledge of `abi.h` |
+## IV. The Concurrency: "The Assembly Line"
+Invoke rejects the traditional, lock-heavy multithreading model. Instead, it treats the CPU like an assembly line.
+*   **Parallel by Design:** By separating Data (Wires) from Logic (Nodes), we can run systems in parallel without a single mutex.
+*   **The Double-Buffer Armor:** Wires act as synchronization barriers. Nodes read from the "Front" and write to the "Back." Race conditions are physically impossible.
+*   **Deterministic Parallelism:** The result of a frame is bit-for-bit identical regardless of how many cores you use. This eliminates "Heisenbugs" and makes AI-training perfect.
+
+## V. Summary of the "Invoke Handshake"
+| Component | Responsibility | Knowledge of Logic | Knowledge of Data |
 | :--- | :--- | :--- | :--- |
-| **Kernel** | Zig | No (Strict Isolation) | Yes (The Contract) |
-| **Extension** | Zig/C | Yes (The Bridge) | Yes (The Contract) |
-| **Node** | Lua | Internal Only | Indirect (via FFI) |
+| **Kernel** | Motherboard (Silicon) | No (Strict Isolation) | Yes (Management) |
+| **Extension** | The Bridge (Runtime) | Yes (Lua/WASM) | Yes (Binding) |
+| **Node** | The Worker (Logic) | Internal Only | Indirect (via SDK) |
 
 ---
 
 ## The Core Mantra: Logic is Ephemeral, Data is Eternal.
-In Invoke, the traditional concept of an "Object" is destroyed. State lives on **Wires** (eternal), and behavior lives in **Nodes** (ephemeral). This separation allows for fearless experimentation and radical token efficiency.
+In Invoke, the traditional concept of an "Object" is destroyed. State lives on **Wires** (eternal), and behavior lives in **Nodes** (ephemeral). This separation allows for fearless experimentation, radical token efficiency, and bit-perfect deterministic parallelism.

@@ -4,23 +4,28 @@
 
 ## 1. The Motherboard (Zig Kernel)
 A static, high-performance binary (< 2MB) providing the "Universal Silicon" platform.
-* **Pure Silicon:** Zero dependencies on `lua.h`.
-* **Wire Motherboard:** Allocates and manages raw, typeless `[]u8` memory.
-* **The Socket (invoke_abi.h):** A permanent C-ABI contract for all extensions.
-* **Topological Scheduler:** Ruthlessly enforces the Heartbeat and Poke cycles.
+*   **Pure Silicon:** Zero dependencies on `lua.h`.
+*   **Silicon Gating:** Ruthlessly enforces hardware-level memory protection (`mprotect`) on Wires.
+*   **The Socket (invoke_abi.h):** A permanent C-ABI contract for all extensions.
+*   **Chameleon Scheduler:** A dependency-aware DAG executor that can toggle between Deterministic (Double-Buffered) and Dynamic (Single-Buffered) execution.
 
-## 2. The Primary Engine (LuaJIT Extension)
-The standard runtime for logic execution.
-* **Privileged Extension:** Built using the `invoke_abi.h` but possessing deep knowledge of `lua.h`.
-* **Zero-Recompile Schema:** Uses JIT-Type-Casting to lay memory "stencils" over raw wires.
-* **Hot-Reloading:** Intercepts script changes and performs the "Pause-Swap-Play" handshake.
+## 2. Eternal Data (Wires)
+State lives on raw, page-aligned memory buffers that persist across logic reloads.
+*   **Double-Buffer Switch:** Wires can be "Banks" (Front/Back). Reads come from Front; Writes go to Back. The Kernel performs a Pointer Swap at the Frame Barrier.
+*   **Zero-Recompile Schema:** Uses JIT-Type-Casting to lay memory "stencils" over raw wires.
+*   **Schema Evolution:** Automated data migration when topology fields shift mid-execution.
 
-## 3. The Handshake (ABI Protocol)
+## 3. Ephemeral Logic (Nodes)
+Application behavior is isolated into "pluggable" sockets.
+*   **Indestructible Heartbeat:** Robust signal recovery ensures the Motherboard survives crashes in user logic.
+*   **Universal SDK:** Standardized logging (`invoke.log`) and services provided by the host via the ABI.
+
+## 4. The Handshake (ABI Protocol)
 Extensions must implement the following C-interface:
-* `init()`: Identify capability and register with Motherboard.
-* `bind_wire(name, ptr)`: Receive a memory pointer from the motherboard.
-* `execute()`: Run logic for the current heartbeat.
-* `shutdown()`: Clean up logic state.
+*   `init()`: Identify capability and register with Motherboard.
+*   `bind_wire(name, ptr, access)`: Receive a memory pointer and permission level.
+*   `execute()`: Run logic for the current heartbeat.
+*   `set_log_handler(fn)`: Receive the host's telemetry callback.
 
 ## 4. Universal Development
 | Aspect | Mechanism |

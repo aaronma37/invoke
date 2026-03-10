@@ -1,18 +1,44 @@
 # Invoke Changelog
 
-## [v0.4.0] - The "Motherboard" Refactor (PLANNING)
-*“Stripping the Kernel: Modular Ubiquity.”*
+## [v0.5.0] - The "Chameleon Kernel" (PLANNING)
+*“Determinism as a Switch: The Assembly Line Model.”*
 
 ### 🚀 Planned Architectural Shifts
 
-#### 1. Decoupled Runtimes (Extensions)
-*   **Kernel Stripping:** Move LuaJIT and Wasmtime out of the core binary into dynamic shared libraries (`ext/luajit_ext.so`, `ext/wasm_ext.so`).
-*   **Dynamic Loading:** Implement `std.DynLib` support in the Zig host to load extensions based on `topology.json`.
-*   **Chameleon Scaling:** Enable the engine to run on tiny hardware by only loading necessary extensions.
+#### 1. Double-Buffered Wires
+*   **The Switch:** Wires gain a `buffered` flag. When enabled, the Kernel allocates Front/Back banks to eliminate race conditions.
+*   **Frame Barrier:** Implement a global pointer-swap at the end of the tick.
 
-#### 2. Stable Silicon ABI
-*   **The Socket:** Define a stable C-header (`invoke_abi.h`) that serves as the permanent interface between the Motherboard and Extensions.
-*   **Binary Portability:** Ensure that extensions compiled for one Invoke Core version work on future versions without re-linking.
+#### 2. DAG Scheduler
+*   **Parallel Islands:** The Kernel analyzes `topology.json` to group non-overlapping nodes for parallel execution.
+*   **Work-Stealing Pool:** Static thread pinning and work-stealing to maximize core utilization.
+
+---
+
+## [v0.4.5] - The "Armor & Telemetry" Update
+*“Observation is the first step to optimization.”*
+
+### 🚀 Major Architectural Shifts
+
+#### 1. Granular Silicon Gating (mprotect)
+*   **Hardware Enforcement:** The Motherboard now surgically unlocks only the requested memory permissions (`PROT_READ` vs `PROT_WRITE`) based on the topology bindings.
+*   **Violation Recovery:** Successfully verified that illegal memory access triggers a segfault which is caught and recovered from without halting the heartbeat.
+
+#### 2. Schema Evolution & Migration
+*   **Eternal Data:** Changing a wire's schema mid-execution now triggers an automatic data migration. The kernel maps old fields to new offsets by name, ensuring state survives architectural shifts.
+
+#### 3. Global Engine Logging (`invoke.log`)
+*   **Universal Telemetry:** Implemented a host-side logging callback in the ABI. Both Lua and WASM nodes can now send structured, severity-leveled messages back to the Kernel.
+*   **Context Enrichment:** Logs are automatically prefixed with the Node's full path for precise debugging.
+
+#### 4. WASM Guest SDK
+*   **Invoke SDK:** Created a lightweight Zig SDK for WASM nodes, abstracting away manual offset management and providing clean logging/wiring interfaces.
+*   **Performance:** Optimized the WASM extension to cache function exports, reducing frame overhead to near-zero.
+
+---
+
+## [v0.4.0] - The "Motherboard" Refactor (COMPLETED)
+*“Stripping the Kernel: Modular Ubiquity.”*
 
 ---
 

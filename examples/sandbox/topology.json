@@ -2,7 +2,10 @@
   "namespaces": {
     "player": {
       "wires": {
-        "stats": "x:f32;y:f32;health:i32"
+        "stats": {
+          "schema": "x:f32;y:f32;health:i32",
+          "buffered": true
+        }
       },
       "nodes": [
         {

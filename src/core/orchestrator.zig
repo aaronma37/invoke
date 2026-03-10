@@ -66,13 +66,13 @@ pub const Orchestrator = struct {
         return self.nodes.getPtr(path).?;
     }
 
-    pub fn addWire(self: *Orchestrator, path: []const u8, schema_str: []const u8, size: usize) !*wire.RawWire {
+    pub fn addWire(self: *Orchestrator, path: []const u8, schema_str: []const u8, size: usize, buffered: bool) !*wire.RawWire {
         if (self.wires.get(path)) |existing| {
             if (std.mem.eql(u8, existing.schema_str, schema_str)) return existing;
 
             // SCHEMA EVOLUTION: Migrate data!
             std.debug.print("[Orchestrator] Schema changed for {s}! Migrating data...\n", .{path});
-            const new_wire = try wire.RawWire.init(self.allocator, path, schema_str, size);
+            const new_wire = try wire.RawWire.init(self.allocator, path, schema_str, size, buffered);
             
             // Basic "stenciling" migration: Match fields by name
             try self.migrateData(existing, new_wire);
@@ -84,10 +84,17 @@ pub const Orchestrator = struct {
             return new_wire;
         }
 
-        const w = try wire.RawWire.init(self.allocator, path, schema_str, size);
+        const w = try wire.RawWire.init(self.allocator, path, schema_str, size, buffered);
         try self.wires.put(try self.allocator.dupe(u8, path), w);
-        std.debug.print("[Orchestrator] Registered Wire: {s} ({d} bytes)\n", .{ path, size });
+        std.debug.print("[Orchestrator] Registered Wire: {s} ({d} bytes, Buffered: {any})\n", .{ path, size, buffered });
         return w;
+    }
+
+    pub fn swapAllWires(self: *Orchestrator) void {
+        var it = self.wires.valueIterator();
+        while (it.next()) |w| {
+            w.*.swap();
+        }
     }
 
     fn migrateData(self: *Orchestrator, old: *wire.RawWire, new: *wire.RawWire) !void {
@@ -170,22 +177,41 @@ pub const Orchestrator = struct {
     /// Temporarily unlocks hardware-protected memory wires before execution.
     fn executeNode(self: *Orchestrator, n: *node.Node) !void {
         _ = self;
-        std.debug.print("[Orchestrator] Executing node {s}...\n", .{ n.name });
-        // 1. UNLOCK WIRES (Granular Silicon Gating)
-        var it = n.bound_wires.valueIterator();
-        while (it.next()) |binding| {
-            binding.wire.setAccess(binding.access);
+        // 1. UNLOCK WIRES (Deterministic Gating)
+        var it = n.bound_wires.iterator();
+        while (it.next()) |entry| {
+            const binding = entry.value_ptr;
+            const w = binding.wire;
+            
+            // DETERMINISTIC LOGIC: 
+            // - If it's a WRITE wire, give them the BACK bank (PROT_READ | PROT_WRITE)
+            // - If it's only a READ wire, give them the FRONT bank (PROT_READ)
+            const is_write = (binding.access & std.posix.PROT.WRITE != 0);
+            const bank_idx: usize = if (is_write) 1 - w.front_index else w.front_index;
+            const ptr = if (is_write) w.backPtr() else w.frontPtr();
+            
+            // Update the Extension's view of the wire for this tick
+            const name_z = try n.allocator.dupeZ(u8, entry.key_ptr.*);
+            defer n.allocator.free(name_z);
+            _ = n.vtable.bind_wire.?(n.handle, name_z.ptr, ptr, binding.access);
+
+            w.setBankAccess(bank_idx, binding.access);
         }
 
+        std.debug.print("[Orchestrator] Executing node {s}...\n", .{ n.name });
         // 2. EXECUTE
         n.execute() catch |err| {
             std.debug.print("[Orchestrator] Node {s} failed: {any}\n", .{ n.name, err });
         };
 
         // 3. LOCK WIRES (Protect the Motherboard)
-        it = n.bound_wires.valueIterator();
-        while (it.next()) |binding| {
-            binding.wire.setAccess(std.posix.PROT.NONE);
+        it = n.bound_wires.iterator();
+        while (it.next()) |entry| {
+            const binding = entry.value_ptr;
+            const w = binding.wire;
+            const is_write = (binding.access & std.posix.PROT.WRITE != 0);
+            const bank_idx: usize = if (is_write) 1 - w.front_index else w.front_index;
+            w.setBankAccess(bank_idx, std.posix.PROT.NONE);
         }
     }
 

@@ -77,7 +77,7 @@ pub const Node = struct {
         const name_z = self.allocator.dupeZ(u8, wire_name) catch return;
         defer self.allocator.free(name_z);
         
-        _ = self.vtable.bind_wire.?(self.handle, name_z.ptr, w.ptr(), w.buffer.len);
+        _ = self.vtable.bind_wire.?(self.handle, name_z.ptr, w.ptr(), w.size);
         
         // Track binding for Silicon Gating (mprotect)
         if (self.bound_wires.getPtr(wire_name)) |existing| {
