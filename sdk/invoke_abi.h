@@ -5,22 +5,17 @@
 #include <stddef.h>
 
 /**
- * INVOKE ABI v1.0
+ * INVOKE ABI v1.1
  * The stable handshake between the Pure Silicon (Kernel) 
  * and the logic runtimes (Extensions).
  */
 
 #define INVOKE_ABI_VERSION 1
 
-typedef enum {
-    INVOKE_STATUS_OK = 0,
-    INVOKE_STATUS_ERROR = 1,
-} invoke_status_t;
+#define INVOKE_STATUS_OK 0
+#define INVOKE_STATUS_ERROR 1
 
-/**
- * The Extension's internal representation of a logic unit.
- * Handled as an opaque pointer by the Kernel.
- */
+typedef uint32_t invoke_status_t;
 typedef void* invoke_node_h;
 
 typedef enum {
@@ -38,6 +33,12 @@ typedef enum {
 typedef void (*invoke_log_fn)(invoke_log_level_t level, const char* node_name, const char* message);
 
 /**
+ * The Host-side event trigger (Poke).
+ * Nodes call this to signal that something happened on the Wires.
+ */
+typedef void (*invoke_poke_fn)(const char* event_name);
+
+/**
  * Function pointers that the Extension MUST export for the Kernel to use.
  */
 typedef struct {
@@ -46,7 +47,7 @@ typedef struct {
     void (*destroy_node)(invoke_node_h node);
 
     // 2. Data Wiring
-    invoke_status_t (*bind_wire)(invoke_node_h node, const char* name, void* ptr, size_t size);
+    invoke_status_t (*bind_wire)(invoke_node_h node, const char* name, void* ptr, size_t access);
 
     // 3. Execution
     invoke_status_t (*tick)(invoke_node_h node);
@@ -57,6 +58,8 @@ typedef struct {
 
     // 5. Host Services (New in v1.1)
     void (*set_log_handler)(invoke_log_fn log_handler);
+    void (*set_poke_handler)(invoke_poke_fn poke_handler);
+    void (*set_orchestrator_handler)(void* orch);
 } invoke_extension_t;
 
 /**

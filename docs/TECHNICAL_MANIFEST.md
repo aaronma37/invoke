@@ -27,7 +27,14 @@ Extensions must implement the following C-interface:
 *   `execute()`: Run logic for the current heartbeat.
 *   `set_log_handler(fn)`: Receive the host's telemetry callback.
 
-## 4. Universal Development
+## 4. Data Layout Freedom (SOA vs AOS)
+Invoke is **Layout-Agnostic**. The Kernel provides raw memory; the AI defines the orientation.
+
+*   **AOS (Array of Structures):** Perfect for "Brain" nodes. The AI defines a complex wire (e.g., `stats: {x, y, hp}`). This is easy for logic but slower for the CPU cache.
+*   **SOA (Structure of Arrays):** Perfect for "Muscle" nodes (SIMD). The AI defines separate wires (e.g., `pos_x`, `pos_y`, `health`). This keeps the CPU cache hot and enables zero-copy vectorized processing.
+*   **The Switch:** Refactoring from AOS to SOA—which takes weeks in a traditional engine—is a 10-second change to the `topology.json` in Invoke.
+
+## 5. Universal Development
 | Aspect | Mechanism |
 | :--- | :--- |
 | **Persistence** | Logic is swapped; Wires (RAM) remain constant. |

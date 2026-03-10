@@ -8,6 +8,7 @@ const c = @cImport({
 const abi = c;
 
 var global_log_handler: ?abi.invoke_log_fn = null;
+var global_poke_handler: ?abi.invoke_poke_fn = null;
 
 const WasmNode = struct {
     engine: ?*c.wasm_engine_t,
@@ -67,30 +68,40 @@ const WasmNode = struct {
             return error.WasmModuleNewFailed;
         }
 
-        // CREATE HOST IMPORTS (invoke_log)
-        // Signature: (i32, i32, i32) -> ()
-        var params_arr: [3]*c.wasm_valtype_t = undefined;
-        params_arr[0] = c.wasm_valtype_new(c.WASM_I32).?;
-        params_arr[1] = c.wasm_valtype_new(c.WASM_I32).?;
-        params_arr[2] = c.wasm_valtype_new(c.WASM_I32).?;
-        
-        var param_vec: c.wasm_valtype_vec_t = undefined;
-        c.wasm_valtype_vec_new(&param_vec, 3, @ptrCast(&params_arr));
-        
-        var result_vec: c.wasm_valtype_vec_t = undefined;
-        c.wasm_valtype_vec_new_empty(&result_vec);
-        
-        const functype = c.wasm_functype_new(&param_vec, &result_vec);
-        
-        var log_func: c.wasmtime_func_t = undefined;
-        c.wasmtime_func_new(self.context, functype, @ptrCast(&wasm_log_callback), self, null, &log_func);
-        c.wasm_functype_delete(functype);
+        // CREATE HOST IMPORTS
+        var result_vec_empty: c.wasm_valtype_vec_t = undefined;
+        c.wasm_valtype_vec_new_empty(&result_vec_empty);
 
-        // In a real project, we'd use wasmtime_linker to handle imports properly.
-        const imports: [1]c.wasmtime_extern_t = .{ .{ .kind = c.WASMTIME_EXTERN_FUNC, .of = .{ .func = log_func } } };
+        // 1. invoke_log (i32, i32, i32) -> ()
+        var params_log: [3]*c.wasm_valtype_t = undefined;
+        params_log[0] = c.wasm_valtype_new(c.WASM_I32).?;
+        params_log[1] = c.wasm_valtype_new(c.WASM_I32).?;
+        params_log[2] = c.wasm_valtype_new(c.WASM_I32).?;
+        var param_vec_log: c.wasm_valtype_vec_t = undefined;
+        c.wasm_valtype_vec_new(&param_vec_log, 3, @ptrCast(&params_log));
+        const functype_log = c.wasm_functype_new(&param_vec_log, &result_vec_empty);
+        var log_func: c.wasmtime_func_t = undefined;
+        c.wasmtime_func_new(self.context, functype_log, @ptrCast(&wasm_log_callback), self, null, &log_func);
+        c.wasm_functype_delete(functype_log);
+
+        // 2. invoke_poke (i32, i32) -> ()
+        var params_poke: [2]*c.wasm_valtype_t = undefined;
+        params_poke[0] = c.wasm_valtype_new(c.WASM_I32).?;
+        params_poke[1] = c.wasm_valtype_new(c.WASM_I32).?;
+        var param_vec_poke: c.wasm_valtype_vec_t = undefined;
+        c.wasm_valtype_vec_new(&param_vec_poke, 2, @ptrCast(&params_poke));
+        const functype_poke = c.wasm_functype_new(&param_vec_poke, &result_vec_empty);
+        var poke_func: c.wasmtime_func_t = undefined;
+        c.wasmtime_func_new(self.context, functype_poke, @ptrCast(&wasm_poke_callback), self, null, &poke_func);
+        c.wasm_functype_delete(functype_poke);
+
+        const imports: [2]c.wasmtime_extern_t = .{ 
+            .{ .kind = c.WASMTIME_EXTERN_FUNC, .of = .{ .func = log_func } },
+            .{ .kind = c.WASMTIME_EXTERN_FUNC, .of = .{ .func = poke_func } } 
+        };
 
         var trap: ?*c.wasm_trap_t = null;
-        err = c.wasmtime_instance_new(self.context, self.module, &imports, 1, &self.instance, &trap);
+        err = c.wasmtime_instance_new(self.context, self.module, &imports, 2, &self.instance, &trap);
         if (err != null or trap != null) {
             std.debug.print("[WASM Ext] wasmtime_instance_new failed (err: {?}, trap: {?})\n", .{ err, trap });
             return error.WasmInstantiateFailed;
@@ -115,7 +126,6 @@ const WasmNode = struct {
             err = c.wasmtime_func_call(self.context, &export_val.of.func, null, 0, &results, 1, &trap);
             if (err == null and trap == null) {
                 self.guest_offset = @intCast(results[0].of.i32);
-                // std.debug.print("[WASM Ext] Guest wire buffer offset: 0x{X}\n", .{ self.guest_offset });
             } else {
                 std.debug.print("[WASM Ext Error] get_wire_buffer call failed\n", .{});
             }
@@ -158,7 +168,6 @@ fn wasm_log_callback(
     const message = data_ptr[ptr .. ptr + len];
 
     if (global_log_handler) |log| {
-        // Null-terminate for C-ABI safety
         var buf: [1024]u8 = undefined;
         const safe_len = @min(message.len, 1023);
         @memcpy(buf[0..safe_len], message[0..safe_len]);
@@ -169,10 +178,45 @@ fn wasm_log_callback(
     return null;
 }
 
+fn wasm_poke_callback(
+    env: ?*anyopaque,
+    caller: ?*c.wasmtime_caller_t,
+    args: [*c]const c.wasmtime_val_t,
+    nargs: usize,
+    results: [*c]c.wasmtime_val_t,
+    nresults: usize
+) callconv(.C) ?*c.wasm_trap_t {
+    _ = results; _ = nresults; _ = nargs; _ = env;
+    const ptr: usize = @intCast(args[0].of.i32);
+    const len: usize = @intCast(args[1].of.i32);
+
+    const ctx = c.wasmtime_caller_context(caller);
+    var export_val: c.wasmtime_extern_t = undefined;
+    if (c.wasmtime_caller_export_get(caller, "memory", 6, &export_val)) {
+        if (export_val.kind == c.WASMTIME_EXTERN_MEMORY) {
+            const data_ptr = c.wasmtime_memory_data(ctx, &export_val.of.memory);
+            const event_name = data_ptr[ptr .. ptr + len];
+
+            if (global_poke_handler) |poke| {
+                var buf: [256]u8 = undefined;
+                const safe_len = @min(event_name.len, 255);
+                @memcpy(buf[0..safe_len], event_name[0..safe_len]);
+                buf[safe_len] = 0;
+                poke.?(&buf);
+            }
+        }
+    }
+    return null;
+}
+
 // --- ABI IMPLEMENTATION ---
 
 export fn set_log_handler(handler: abi.invoke_log_fn) void {
     global_log_handler = handler;
+}
+
+export fn set_poke_handler(handler: abi.invoke_poke_fn) void {
+    global_poke_handler = handler;
 }
 
 export fn create_node(name: [*c]const u8, script_path: [*c]const u8) abi.invoke_node_h {
@@ -191,7 +235,6 @@ export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopa
     const host_ptr_bytes: [*]u8 = @ptrCast(ptr.?);
     const is_output = (access & 2 != 0);
 
-    // DEDUPLICATE BY NAME: Pointers rotate every frame!
     for (node.bindings.items) |*b| {
         if (std.mem.eql(u8, b.name, wire_name)) {
             b.host_ptr = host_ptr_bytes;
@@ -200,7 +243,6 @@ export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopa
         }
     }
 
-    // New binding
     var current_offset: usize = 0;
     for (node.bindings.items) |b| {
         current_offset += (b.size + 15) & ~@as(usize, 15);
@@ -216,7 +258,6 @@ export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopa
         .is_output = is_output,
     }) catch return c.INVOKE_STATUS_ERROR;
 
-    // std.debug.print("[WASM Ext] Bound wire '{s}' to guest offset 0x{X} (Output: {any})\n", .{ wire_name, current_offset, is_output });
     return c.INVOKE_STATUS_OK;
 }
 
@@ -228,12 +269,10 @@ export fn tick(handle: abi.invoke_node_h) abi.invoke_status_t {
         const data_ptr = c.wasmtime_memory_data(ctx, &node.memory);
         const base = data_ptr + node.guest_offset;
         
-        // 1. O(1) SYNC IN: No string lookups!
         for (node.bindings.items) |b| {
             @memcpy(base[b.guest_offset .. b.guest_offset + b.size], b.host_ptr[0..b.size]);
         }
 
-        // 2. CALL GUEST
         if (node.tick_func) |f| {
             var trap: ?*c.wasm_trap_t = null;
             const err = c.wasmtime_func_call(ctx, &f, null, 0, null, 0, &trap);
@@ -243,7 +282,6 @@ export fn tick(handle: abi.invoke_node_h) abi.invoke_status_t {
             }
         }
 
-        // 3. O(1) SYNC OUT: No string lookups!
         for (node.bindings.items) |b| {
             if (b.is_output) {
                 @memcpy(b.host_ptr[0..b.size], base[b.guest_offset .. b.guest_offset + b.size]);
@@ -275,5 +313,6 @@ export fn invoke_ext_init() abi.invoke_extension_t {
         .reload_node = reload_node,
         .add_trigger = add_trigger,
         .set_log_handler = set_log_handler,
+        .set_poke_handler = set_poke_handler,
     };
 }

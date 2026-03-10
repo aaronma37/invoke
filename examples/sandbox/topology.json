@@ -41,6 +41,17 @@
           "writes": ["wind"]
         }
       ]
+    },
+    "debug": {
+      "wires": {},
+      "nodes": [
+        {
+          "name": "visualizer",
+          "type": "hud",
+          "mode": "Heartbeat",
+          "script": "none"
+        }
+      ]
     }
   }
 }

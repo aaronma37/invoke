@@ -1,7 +1,15 @@
 const std = @import("std");
-const node = @import("node.zig");
-const wire = @import("wire.zig");
+pub const node = @import("node.zig");
+pub const wire = @import("wire.zig");
 const extension = @import("extension.zig");
+
+// Signal recovery imports for the worker threads
+const c_signal = @cImport({
+    @cInclude("setjmp.h");
+});
+
+threadlocal var jump_buffer: c_signal.jmp_buf = undefined;
+threadlocal var is_recovering: bool = false;
 
 pub const ExecutionMode = enum {
     Heartbeat,
@@ -15,18 +23,31 @@ pub const Orchestrator = struct {
     nodes: std.StringHashMap(node.Node),
     ext_manager: extension.ExtensionManager,
     pokes: std.ArrayList([]const u8),
+    pokes_mutex: std.Thread.Mutex = .{},
+    
+    // THE TASK GRAPH
+    levels: std.ArrayList(std.ArrayList(*node.Node)),
+    
+    // THE ASSEMBLY LINE (Thread Pool)
+    thread_pool: std.Thread.Pool,
 
-    pub fn init(allocator: std.mem.Allocator) Orchestrator {
-        return .{
+    pub fn init(self: *Orchestrator, allocator: std.mem.Allocator) !void {
+        self.* = .{
             .allocator = allocator,
             .wires = std.StringHashMap(*wire.RawWire).init(allocator),
             .nodes = std.StringHashMap(node.Node).init(allocator),
             .ext_manager = extension.ExtensionManager.init(allocator),
             .pokes = std.ArrayList([]const u8).init(allocator),
+            .levels = std.ArrayList(std.ArrayList(*node.Node)).init(allocator),
+            .thread_pool = undefined,
         };
+        
+        try self.thread_pool.init(.{ .allocator = allocator });
     }
 
     pub fn deinit(self: *Orchestrator) void {
+        self.thread_pool.deinit();
+        
         var wire_it = self.wires.iterator();
         while (wire_it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
@@ -44,6 +65,9 @@ pub const Orchestrator = struct {
         self.ext_manager.deinit();
         self.wires.deinit();
         self.nodes.deinit();
+
+        self.clearLevels();
+        self.levels.deinit();
     }
 
     pub fn createNode(self: *Orchestrator, path: []const u8, ext_type: []const u8, mode: ExecutionMode, script_path: []const u8) !*node.Node {
@@ -53,15 +77,9 @@ pub const Orchestrator = struct {
         const script_z = try self.allocator.dupeZ(u8, script_path);
         defer self.allocator.free(script_z);
 
-        const handle = ext.vtable.create_node.?(path_z.ptr, script_z.ptr);
+        const handle = ext.vtable.create_node.?(path_z.ptr, script_z.ptr) orelse return error.NodeCreationFailed;
+        
         const n = try node.Node.init(self.allocator, path, mode, script_path, ext.vtable, handle);
-
-        if (self.nodes.getPtr(path)) |existing| {
-            existing.deinit();
-            existing.* = n;
-            return existing;
-        }
-
         try self.nodes.put(try self.allocator.dupe(u8, path), n);
         return self.nodes.getPtr(path).?;
     }
@@ -74,10 +92,8 @@ pub const Orchestrator = struct {
             std.debug.print("[Orchestrator] Schema changed for {s}! Migrating data...\n", .{path});
             const new_wire = try wire.RawWire.init(self.allocator, path, schema_str, size, buffered);
             
-            // Basic "stenciling" migration: Match fields by name
             try self.migrateData(existing, new_wire);
 
-            // Replace existing wire
             _ = self.wires.remove(path);
             existing.deinit();
             try self.wires.put(try self.allocator.dupe(u8, path), new_wire);
@@ -101,9 +117,8 @@ pub const Orchestrator = struct {
         _ = self;
         const schema = @import("schema.zig");
         
-        // Temporarily unlock both for migration
         old.setAccess(std.posix.PROT.READ);
-        new.setAccess(std.posix.PROT.WRITE);
+        new.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
         defer {
             old.setAccess(std.posix.PROT.NONE);
             new.setAccess(std.posix.PROT.NONE);
@@ -117,7 +132,6 @@ pub const Orchestrator = struct {
             const type_str = new_parts.next() orelse continue;
             const size = schema.GetTypeSize(type_str);
 
-            // Look for this field in the old schema
             var old_it = std.mem.tokenizeAny(u8, old.schema_str, ";");
             var old_offset: usize = 0;
             var found = false;
@@ -128,7 +142,6 @@ pub const Orchestrator = struct {
                 const old_size = schema.GetTypeSize(old_type);
 
                 if (std.mem.eql(u8, name, old_name)) {
-                    // Match! Copy data if types (and thus sizes) are compatible
                     const copy_size = @min(size, old_size);
                     const old_ptr: [*]u8 = @ptrCast(old.ptr());
                     const new_ptr: [*]u8 = @ptrCast(new.ptr());
@@ -138,29 +151,86 @@ pub const Orchestrator = struct {
                 }
                 old_offset += old_size;
             }
-            
-            if (found) {
-                std.debug.print("  - Field '{s}' migrated.\n", .{name});
-            } else {
-                std.debug.print("  - Field '{s}' is NEW.\n", .{name});
-            }
-
             new_offset += size;
         }
     }
 
+    fn clearLevels(self: *Orchestrator) void {
+        for (self.levels.items) |level| level.deinit();
+        self.levels.clearRetainingCapacity();
+    }
+
+    pub fn rebuildTaskGraph(self: *Orchestrator) !void {
+        self.clearLevels();
+        var remaining_nodes = std.ArrayList(*node.Node).init(self.allocator);
+        defer remaining_nodes.deinit();
+        var it = self.nodes.valueIterator();
+        while (it.next()) |n| if (n.mode == .Heartbeat) try remaining_nodes.append(n);
+
+        while (remaining_nodes.items.len > 0) {
+            var current_level = std.ArrayList(*node.Node).init(self.allocator);
+            var i: usize = 0;
+            var changed = false;
+            while (i < remaining_nodes.items.len) {
+                const n = remaining_nodes.items[i];
+                var depends = false;
+                for (remaining_nodes.items) |other| {
+                    if (n == other) continue;
+                    if (self.dependsOn(n, other)) { depends = true; break; }
+                }
+                if (!depends) {
+                    try current_level.append(n);
+                    _ = remaining_nodes.swapRemove(i);
+                    changed = true;
+                } else i += 1;
+            }
+            if (!changed) break;
+            try self.levels.append(current_level);
+        }
+        std.debug.print("[Orchestrator] Task Graph: {d} parallel levels.\n", .{self.levels.items.len});
+    }
+
+    fn dependsOn(self: *Orchestrator, a: *node.Node, b: *node.Node) bool {
+        _ = self;
+        if (a == b) return false;
+        var a_it = a.bound_wires.valueIterator();
+        while (a_it.next()) |a_b| {
+            if (a_b.wire.is_buffered) continue;
+            if (a_b.access & 1 != 0) {
+                var b_it = b.bound_wires.valueIterator();
+                while (b_it.next()) |b_b| {
+                    if (b_b.wire == a_b.wire and b_b.access & 2 != 0) return true;
+                }
+            }
+        }
+        return false;
+    }
+
     pub fn poke(self: *Orchestrator, event: []const u8) !void {
+        self.pokes_mutex.lock();
+        defer self.pokes_mutex.unlock();
         try self.pokes.append(try self.allocator.dupe(u8, event));
     }
 
     pub fn tick(self: *Orchestrator) !void {
-        var node_it = self.nodes.valueIterator();
-        while (node_it.next()) |n| {
-            if (n.mode == .Heartbeat) try self.executeNode(n);
+        for (self.levels.items) |level| {
+            var wg = std.Thread.WaitGroup{};
+            for (level.items) |n| {
+                wg.start();
+                try self.thread_pool.spawn(parallelWorker, .{ self, n, &wg });
+            }
+            self.thread_pool.waitAndWork(&wg);
         }
 
-        while (self.pokes.items.len > 0) {
+        while (true) {
+            self.pokes_mutex.lock();
+            if (self.pokes.items.len == 0) {
+                self.pokes_mutex.unlock();
+                break;
+            }
             const event = self.pokes.orderedRemove(0);
+            self.pokes_mutex.unlock();
+            
             defer self.allocator.free(event);
             var it = self.nodes.valueIterator();
             while (it.next()) |n| {
@@ -173,45 +243,45 @@ pub const Orchestrator = struct {
         }
     }
 
-    /// The 'Silicon Gating' wrapper. 
-    /// Temporarily unlocks hardware-protected memory wires before execution.
+    fn parallelWorker(self: *Orchestrator, n: *node.Node, wg: *std.Thread.WaitGroup) void {
+        defer wg.finish();
+        is_recovering = true;
+        if (c_signal.setjmp(&jump_buffer) == 0) {
+            self.executeNode(n) catch |err| {
+                std.debug.print("[Parallel] Node {s} failed: {any}\n", .{ n.name, err });
+            };
+        } else {
+            std.debug.print("[Parallel] RECOVERY: Node {s} crashed.\n", .{ n.name });
+        }
+        is_recovering = false;
+    }
+
     fn executeNode(self: *Orchestrator, n: *node.Node) !void {
         _ = self;
-        // 1. UNLOCK WIRES (Deterministic Gating)
         var it = n.bound_wires.iterator();
         while (it.next()) |entry| {
             const binding = entry.value_ptr;
             const w = binding.wire;
-            
-            // DETERMINISTIC LOGIC: 
-            // - If it's a WRITE wire, give them the BACK bank (PROT_READ | PROT_WRITE)
-            // - If it's only a READ wire, give them the FRONT bank (PROT_READ)
-            const is_write = (binding.access & std.posix.PROT.WRITE != 0);
-            
-            // If the wire isn't buffered, we ALWAYS use the front bank.
+            const is_write = (binding.access & 2 != 0);
             const bank_idx: usize = if (w.is_buffered and is_write) 1 - w.front_index else w.front_index;
             const ptr = if (w.is_buffered and is_write) w.backPtr() else w.frontPtr();
             
-            // Update the Extension's view of the wire for this tick
             const name_z = try n.allocator.dupeZ(u8, entry.key_ptr.*);
             defer n.allocator.free(name_z);
             _ = n.vtable.bind_wire.?(n.handle, name_z.ptr, ptr, binding.access);
-
             w.setBankAccess(bank_idx, binding.access);
         }
 
-        // 2. EXECUTE
         n.execute() catch |err| {
             std.debug.print("[Orchestrator] Node {s} failed: {any}\n", .{ n.name, err });
         };
 
-        // 3. LOCK WIRES (Protect the Motherboard)
         it = n.bound_wires.iterator();
         while (it.next()) |entry| {
             const binding = entry.value_ptr;
             const w = binding.wire;
-            const is_write = (binding.access & std.posix.PROT.WRITE != 0);
-            const bank_idx: usize = if (is_write) 1 - w.front_index else w.front_index;
+            const is_write = (binding.access & 2 != 0);
+            const bank_idx: usize = if (w.is_buffered and is_write) 1 - w.front_index else w.front_index;
             w.setBankAccess(bank_idx, std.posix.PROT.NONE);
         }
     }

@@ -23,6 +23,7 @@ export fn tick() void {
     stats.health -= 2;
 
     if (stats.health < 50) {
-        invoke.info("Player health is low! Applying critical physics update.");
+        invoke.info("Player health is low! Poking damage system.");
+        invoke.poke("on_collision");
     }
 }

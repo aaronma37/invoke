@@ -10,8 +10,8 @@ const c = @cImport({
     @cInclude("setjmp.h");
 });
 
-var jump_buffer: c.jmp_buf = undefined;
-var is_recovering: bool = false;
+threadlocal var jump_buffer: c.jmp_buf = undefined;
+threadlocal var is_recovering: bool = false;
 
 fn segfault_handler(sig: c_int) callconv(.C) void {
     _ = sig;
@@ -92,8 +92,11 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
     sa.__sigaction_handler.sa_handler = segfault_handler;
     _ = c.sigaction(c.SIGSEGV, &sa, null);
 
-    var orch = orchestrator.Orchestrator.init(allocator);
+    var orch: orchestrator.Orchestrator = undefined;
+    try orch.init(allocator);
     defer orch.deinit();
+    
+    @import("core/extension.zig").current_orch = &orch;
 
     var last_topology_mtime: i128 = 0;
     var frame_count: u32 = 0;
@@ -115,6 +118,7 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
         if (stat.mtime > last_topology_mtime) {
             std.debug.print("\n[Kernel] Hot-swapping GRAPH TOPOLOGY...\n", .{});
             last_topology_mtime = stat.mtime;
+            is_recovering = false;
             try reloadTopology(allocator, &orch, topo_path);
         }
 
@@ -294,4 +298,6 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
             }
         }
     }
+
+    try orch.rebuildTaskGraph();
 }

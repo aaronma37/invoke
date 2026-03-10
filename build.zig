@@ -4,6 +4,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // MODULES
+    const core_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/orchestrator.zig"),
+    });
+    core_mod.addIncludePath(b.path("sdk"));
+    core_mod.addIncludePath(b.path("src/core"));
+
     // 1. THE KERNEL (Pure Silicon)
     const exe = b.addExecutable(.{
         .name = "invoke",
@@ -27,6 +34,7 @@ pub fn build(b: *std.Build) void {
     luajit_ext.linkSystemLibrary("luajit-5.1");
     luajit_ext.addIncludePath(b.path("sdk"));
     luajit_ext.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    luajit_ext.root_module.addImport("core", core_mod);
     
     const luajit_install = b.addInstallArtifact(luajit_ext, .{
         .dest_dir = .{ .override = .{ .custom = "../ext" } },
@@ -45,13 +53,39 @@ pub fn build(b: *std.Build) void {
     wasm_ext.addIncludePath(.{ .cwd_relative = "/home/aaron-ma/.local/wasmtime-c-api/include" });
     wasm_ext.addLibraryPath(.{ .cwd_relative = "/home/aaron-ma/.local/wasmtime-c-api/lib" });
     wasm_ext.linkSystemLibrary("wasmtime");
+    wasm_ext.root_module.addImport("core", core_mod);
 
     const wasm_install = b.addInstallArtifact(wasm_ext, .{
         .dest_dir = .{ .override = .{ .custom = "../ext" } },
     });
     b.getInstallStep().dependOn(&wasm_install.step);
 
-    // 4. RUN COMMAND
+    // 4. HUD (RAYLIB) EXTENSION
+    const hud_ext = b.addSharedLibrary(.{
+        .name = "hud_ext",
+        .root_source_file = b.path("extensions/hud/hud_ext.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    hud_ext.linkLibC();
+    hud_ext.addIncludePath(b.path("sdk"));
+    hud_ext.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
+    hud_ext.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
+    hud_ext.linkSystemLibrary("raylib");
+    hud_ext.linkSystemLibrary("GL");
+    hud_ext.linkSystemLibrary("m");
+    hud_ext.linkSystemLibrary("pthread");
+    hud_ext.linkSystemLibrary("dl");
+    hud_ext.linkSystemLibrary("rt");
+    hud_ext.linkSystemLibrary("X11");
+    hud_ext.root_module.addImport("core", core_mod);
+
+    const hud_install = b.addInstallArtifact(hud_ext, .{
+        .dest_dir = .{ .override = .{ .custom = "../ext" } },
+    });
+    b.getInstallStep().dependOn(&hud_install.step);
+
+    // 5. RUN COMMAND
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);

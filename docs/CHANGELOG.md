@@ -1,23 +1,38 @@
 # Invoke Changelog
 
-## [v0.5.0] - The "Chameleon Kernel" (PLANNING)
-*“Determinism as a Switch: The Assembly Line Model.”*
+## [v0.7.0] - Indestructible Isolation (PLANNING)
+*“The Watchdog and the Jail: Total Fault Tolerance.”*
 
 ### 🚀 Planned Architectural Shifts
-
-#### 1. Double-Buffered Wires
-*   **The Switch:** Wires gain a `buffered` flag. When enabled, the Kernel allocates Front/Back banks to eliminate race conditions.
-*   **Frame Barrier:** Implement a global pointer-swap at the end of the tick.
-
-#### 2. DAG Scheduler
-*   **Parallel Islands:** The Kernel analyzes `topology.json` to group non-overlapping nodes for parallel execution.
-*   **Work-Stealing Pool:** Static thread pinning and work-stealing to maximize core utilization.
+1.  **Execution Watchdog:** Forcible interruption of infinite loops/deadlocks.
+2.  **Strike System (Jailing):** Automatically disabling nodes that crash repeatedly until hot-swapped.
+3.  **Forensic Crash Logs:** CPU register and context dumping via `invoke.log`.
 
 ---
 
-## [v0.4.5] - The "Armor & Telemetry" Update
-*“Observation is the first step to optimization.”*
+## [v0.6.0] - The "Nervous System" Update (COMPLETED)
+*“Cross-Namespace Messaging and Thread-Safe Triggers.”*
 
+### 🚀 Major Architectural Shifts
+1.  **Cross-Namespace Poke (`invoke.poke`):** Implemented a global, tag-based event bus. Nodes can now trigger reactions in other namespaces without memory dependencies.
+2.  **Thread-Safe Event Queue:** Developed a Mutex-protected queue in the Orchestrator to handle simultaneous "pokes" from parallel worker threads.
+3.  **Atomic ABI Evolution:** Extended the Silicon ABI to include host-side event registration.
+
+---
+
+## [v0.5.0] - The "Chameleon Kernel" (COMPLETED)
+*“Parallelism as a Switch: The Assembly Line Model.”*
+
+### 🚀 Major Architectural Shifts
+1.  **Double-Buffered Wires:** Implemented Front/Back memory banks. Reads are gated to Front (stable); Writes are gated to Back (ephemeral).
+2.  **Multicore DAG Scheduler:** The Kernel now performs topological dependency analysis and dispatches independent nodes to a `std.Thread.Pool`.
+3.  **Thread-Local Recovery:** Decentralized the signal recovery system. Crashes are now isolated to individual worker threads, ensuring the rest of the motherboard continues.
+4.  **Barrier Synchronization:** Implemented `WaitGroup` barriers between execution levels to ensure deterministic frame results.
+
+---
+
+## [v0.4.5] - The "Armor & Telemetry" Update (COMPLETED)
+...
 ### 🚀 Major Architectural Shifts
 
 #### 1. Granular Silicon Gating (mprotect)

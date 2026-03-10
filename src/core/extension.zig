@@ -1,6 +1,10 @@
 const std = @import("std");
 const node = @import("node.zig");
 
+const orchestrator = @import("orchestrator.zig");
+
+pub var current_orch: ?*orchestrator.Orchestrator = null;
+
 fn kernelLog(level: node.abi.invoke_log_level_t, node_name: [*c]const u8, message: [*c]const u8) callconv(.C) void {
     const level_str = switch (level) {
         node.abi.INVOKE_LOG_DEBUG => "DEBUG",
@@ -13,6 +17,12 @@ fn kernelLog(level: node.abi.invoke_log_level_t, node_name: [*c]const u8, messag
     
     // In a real project, we'd use a colorized, timestamped logger here.
     std.debug.print("[{s}] [{s}] {s}\n", .{ level_str, std.mem.span(node_name), std.mem.span(message) });
+}
+
+fn kernelPoke(event_name: [*c]const u8) callconv(.C) void {
+    if (current_orch) |orch| {
+        orch.poke(std.mem.span(event_name)) catch {};
+    }
 }
 
 pub const Extension = struct {
@@ -37,6 +47,14 @@ pub const Extension = struct {
         // 4. Inject Host Services (v1.1)
         if (self.vtable.set_log_handler) |set_log| {
             set_log(kernelLog);
+        }
+        if (self.vtable.set_poke_handler) |set_poke| {
+            set_poke(kernelPoke);
+        }
+        if (self.vtable.set_orchestrator_handler) |set_orch| {
+            if (current_orch) |orch| {
+                set_orch(orch);
+            }
         }
         
         return self;

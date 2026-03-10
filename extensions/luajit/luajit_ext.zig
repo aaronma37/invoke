@@ -10,6 +10,7 @@ const c = @cImport({
 const abi = c;
 
 var global_log_handler: ?abi.invoke_log_fn = null;
+var global_poke_handler: ?abi.invoke_poke_fn = null;
 
 const LuaNode = struct {
     L: *c.lua_State,
@@ -24,11 +25,16 @@ const LuaNode = struct {
         self.L = c.luaL_newstate() orelse return error.LuaInitFailed;
         c.luaL_openlibs(self.L);
         
-        // Expose invoke.log to Lua
+        // Expose invoke table to Lua
         c.lua_newtable(self.L);
+        
         c.lua_pushlightuserdata(self.L, self);
         c.lua_pushcclosure(self.L, luaLog, 1);
         c.lua_setfield(self.L, -2, "log");
+        
+        c.lua_pushcfunction(self.L, luaPoke);
+        c.lua_setfield(self.L, -2, "poke");
+        
         c.lua_setglobal(self.L, "invoke");
 
         // Initial load
@@ -55,18 +61,28 @@ fn luaLog(L: ?*c.lua_State) callconv(.C) c_int {
     return 0;
 }
 
+fn luaPoke(L: ?*c.lua_State) callconv(.C) c_int {
+    const event_name = c.luaL_checklstring(L, 1, null);
+    if (global_poke_handler) |poke| {
+        poke.?(event_name);
+    }
+    return 0;
+}
+
 // --- ABI IMPLEMENTATION ---
 
 export fn set_log_handler(handler: abi.invoke_log_fn) void {
     global_log_handler = handler;
 }
 
+export fn set_poke_handler(handler: abi.invoke_poke_fn) void {
+    global_poke_handler = handler;
+}
+
 export fn create_node(name: [*c]const u8, script_path: [*c]const u8) abi.invoke_node_h {
     const node = LuaNode.init(std.heap.c_allocator, name, script_path) catch return null;
     return @ptrCast(node);
 }
-
-// ... rest of file (update export vtable)
 
 export fn destroy_node(handle: abi.invoke_node_h) void {
     const node: *LuaNode = @ptrCast(@alignCast(handle));
@@ -79,13 +95,10 @@ export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopa
 
     c.lua_pushlightuserdata(node.L, ptr);
     
-    // Format global name: wire_<name> (replacing dots with underscores)
     var buf: [256]u8 = undefined;
     const wire_name = std.mem.span(name);
     const global_name = std.fmt.bufPrintZ(&buf, "wire_{s}", .{wire_name}) catch return c.INVOKE_STATUS_ERROR;
-    for (global_name) |*char| {
-        if (char.* == '.') char.* = '_';
-    }
+    for (global_name) |*char| if (char.* == '.') { char.* = '_'; };
 
     c.lua_setglobal(node.L, global_name.ptr);
     return c.INVOKE_STATUS_OK;
@@ -139,5 +152,6 @@ export fn invoke_ext_init() abi.invoke_extension_t {
         .reload_node = reload_node,
         .add_trigger = add_trigger,
         .set_log_handler = set_log_handler,
+        .set_poke_handler = set_poke_handler,
     };
 }
