@@ -31,6 +31,7 @@ const WasmNode = struct {
     bindings: std.ArrayList(SyncBinding),
 
     const SyncBinding = struct {
+        name: []const u8,
         host_ptr: [*]u8,
         guest_offset: usize,
         size: usize,
@@ -114,7 +115,7 @@ const WasmNode = struct {
             err = c.wasmtime_func_call(self.context, &export_val.of.func, null, 0, &results, 1, &trap);
             if (err == null and trap == null) {
                 self.guest_offset = @intCast(results[0].of.i32);
-                std.debug.print("[WASM Ext] Guest wire buffer offset: 0x{X}\n", .{ self.guest_offset });
+                // std.debug.print("[WASM Ext] Guest wire buffer offset: 0x{X}\n", .{ self.guest_offset });
             } else {
                 std.debug.print("[WASM Ext Error] get_wire_buffer call failed\n", .{});
             }
@@ -126,6 +127,9 @@ const WasmNode = struct {
     }
 
     pub fn deinit(self: *WasmNode) void {
+        for (self.bindings.items) |b| {
+            self.allocator.free(b.name);
+        }
         self.bindings.deinit();
         if (self.module) |m| c.wasmtime_module_delete(m);
         if (self.store) |s| c.wasmtime_store_delete(s);
@@ -137,7 +141,7 @@ const WasmNode = struct {
 
 fn wasm_log_callback(
     env: ?*anyopaque,
-    caller: ?*c.wasmtime_context_t,
+    caller: ?*c.wasmtime_caller_t,
     args: [*c]const c.wasmtime_val_t,
     nargs: usize,
     results: [*c]c.wasmtime_val_t,
@@ -149,7 +153,8 @@ fn wasm_log_callback(
     const ptr: usize = @intCast(args[1].of.i32);
     const len: usize = @intCast(args[2].of.i32);
 
-    const data_ptr = c.wasmtime_memory_data(caller, &self.memory);
+    const ctx = c.wasmtime_caller_context(caller);
+    const data_ptr = c.wasmtime_memory_data(ctx, &self.memory);
     const message = data_ptr[ptr .. ptr + len];
 
     if (global_log_handler) |log| {
@@ -175,8 +180,6 @@ export fn create_node(name: [*c]const u8, script_path: [*c]const u8) abi.invoke_
     return @ptrCast(node);
 }
 
-// ... rest of file (update export vtable)
-
 export fn destroy_node(handle: abi.invoke_node_h) void {
     const node: *WasmNode = @ptrCast(@alignCast(handle));
     node.deinit();
@@ -184,27 +187,36 @@ export fn destroy_node(handle: abi.invoke_node_h) void {
 
 export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopaque, access: usize) abi.invoke_status_t {
     const node: *WasmNode = @ptrCast(@alignCast(handle));
-    
-    // DYNAMIC OFFSET CALCULATION:
-    // We calculate the offset based on the previous bindings + alignment.
-    var current_offset: usize = 0;
-    for (node.bindings.items) |b| {
-        current_offset += (b.size + 15) & ~@as(usize, 15); // 16-byte alignment
+    const wire_name = std.mem.span(name);
+    const host_ptr_bytes: [*]u8 = @ptrCast(ptr.?);
+    const is_output = (access & 2 != 0);
+
+    // DEDUPLICATE BY NAME: Pointers rotate every frame!
+    for (node.bindings.items) |*b| {
+        if (std.mem.eql(u8, b.name, wire_name)) {
+            b.host_ptr = host_ptr_bytes;
+            b.is_output = b.is_output or is_output;
+            return c.INVOKE_STATUS_OK;
+        }
     }
 
-    // HACK: In this demo, we know the size based on the name.
-    // In a real engine, the ABI would pass both size AND access.
-    const wire_name = std.mem.span(name);
+    // New binding
+    var current_offset: usize = 0;
+    for (node.bindings.items) |b| {
+        current_offset += (b.size + 15) & ~@as(usize, 15);
+    }
+
     const size: usize = if (std.mem.indexOf(u8, wire_name, "stats") != null) 12 else 8;
 
     node.bindings.append(.{
-        .host_ptr = @ptrCast(ptr.?),
+        .name = node.allocator.dupe(u8, wire_name) catch return c.INVOKE_STATUS_ERROR,
+        .host_ptr = host_ptr_bytes,
         .guest_offset = current_offset,
         .size = size,
-        .is_output = (access & 2 != 0), // PROT_WRITE bit
+        .is_output = is_output,
     }) catch return c.INVOKE_STATUS_ERROR;
 
-    std.debug.print("[WASM Ext] Bound wire '{s}' to guest offset 0x{X} (Output: {any})\n", .{ wire_name, current_offset, (access & 2 != 0) });
+    // std.debug.print("[WASM Ext] Bound wire '{s}' to guest offset 0x{X} (Output: {any})\n", .{ wire_name, current_offset, is_output });
     return c.INVOKE_STATUS_OK;
 }
 

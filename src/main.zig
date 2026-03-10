@@ -185,12 +185,9 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
                 
                 // Initialize health if it's a NEW player.stats wire
                 if (!w_existed and std.mem.eql(u8, full_path, "player.stats")) {
-                    w.setAccess(std.posix.PROT.WRITE);
-                    const base_ptr: [*]u8 = @ptrCast(w.ptr());
-                    // Health is at index 8 for the original schema, index 12 for the evolved one.
-                    // We detect based on schema string.
-                    const health_offset: usize = if (std.mem.indexOf(u8, w_schema, "z:f32") != null) 12 else 8;
-                    const health_ptr: *i32 = @ptrCast(@alignCast(base_ptr + health_offset));
+                    w.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
+                    const base_ptr: [*]u8 = @ptrCast(w.backPtr());
+                    const health_ptr: *i32 = @ptrCast(@alignCast(base_ptr + 8));
                     health_ptr.* = 100;
                     w.setAccess(std.posix.PROT.NONE);
                 }

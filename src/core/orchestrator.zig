@@ -187,8 +187,10 @@ pub const Orchestrator = struct {
             // - If it's a WRITE wire, give them the BACK bank (PROT_READ | PROT_WRITE)
             // - If it's only a READ wire, give them the FRONT bank (PROT_READ)
             const is_write = (binding.access & std.posix.PROT.WRITE != 0);
-            const bank_idx: usize = if (is_write) 1 - w.front_index else w.front_index;
-            const ptr = if (is_write) w.backPtr() else w.frontPtr();
+            
+            // If the wire isn't buffered, we ALWAYS use the front bank.
+            const bank_idx: usize = if (w.is_buffered and is_write) 1 - w.front_index else w.front_index;
+            const ptr = if (w.is_buffered and is_write) w.backPtr() else w.frontPtr();
             
             // Update the Extension's view of the wire for this tick
             const name_z = try n.allocator.dupeZ(u8, entry.key_ptr.*);
@@ -198,7 +200,6 @@ pub const Orchestrator = struct {
             w.setBankAccess(bank_idx, binding.access);
         }
 
-        std.debug.print("[Orchestrator] Executing node {s}...\n", .{ n.name });
         // 2. EXECUTE
         n.execute() catch |err| {
             std.debug.print("[Orchestrator] Node {s} failed: {any}\n", .{ n.name, err });

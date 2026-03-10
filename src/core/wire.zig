@@ -36,7 +36,7 @@ pub const RawWire = struct {
         self.maps[0] = try std.posix.mmap(
             null,
             aligned_size,
-            std.posix.PROT.NONE,
+            std.posix.PROT.READ | std.posix.PROT.WRITE,
             .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
             -1,
             0
@@ -48,7 +48,7 @@ pub const RawWire = struct {
             self.maps[1] = try std.posix.mmap(
                 null,
                 aligned_size,
-                std.posix.PROT.NONE,
+                std.posix.PROT.READ | std.posix.PROT.WRITE,
                 .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
                 -1,
                 0
@@ -77,16 +77,12 @@ pub const RawWire = struct {
     pub fn swap(self: *RawWire) void {
         if (!self.is_buffered) return;
         
-        // 1. Ensure Back bank has everything from Front bank before we start the next frame
-        // This is necessary for read-modify-write operations (x += 1).
-        // In a strictly "pure" model we wouldn't do this, but for "vibe coding" it's required.
-        self.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
-        const front = self.banks[self.front_index];
-        const back = self.banks[1 - self.front_index];
-        @memcpy(back[0..self.size], front[0..self.size]);
-        self.setAccess(std.posix.PROT.NONE);
+        const back_idx = 1 - self.front_index;
 
-        self.front_index = 1 - self.front_index;
+        // 1. Commit the Back bank updates to the Front bank
+        self.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
+        @memcpy(self.banks[self.front_index][0..self.size], self.banks[back_idx][0..self.size]);
+        self.setAccess(std.posix.PROT.NONE);
     }
 
     pub fn setAccess(self: *RawWire, prot: u32) void {
