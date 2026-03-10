@@ -132,9 +132,10 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
         // 3. Monitor
         if (orch.getWire("player.stats")) |w| {
             w.setAccess(std.posix.PROT.READ);
-            const ptr = w.ptr();
+            const ptr: [*]u8 = @ptrCast(w.ptr());
             const x = @as(*f32, @ptrCast(@alignCast(ptr))).*;
-            const health = @as(*i32, @ptrCast(@alignCast(@as([*]u8, @ptrCast(ptr)) + 8))).*;
+            const health_offset: usize = if (std.mem.indexOf(u8, w.schema_str, "z:f32") != null) 12 else 8;
+            const health = @as(*i32, @ptrCast(@alignCast(ptr + health_offset))).*;
             std.debug.print("[Monitor] Frame {d} | Player X: {d: >5.2} | HP: {d}\n", .{ frame_count, x, health });
             w.setAccess(std.posix.PROT.NONE);
         }
@@ -165,8 +166,22 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
                 const w_schema = w_entry.value_ptr.*.string;
                 const full_path = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_name, w_name });
                 defer allocator.free(full_path);
+                const w_existed = orch.getWire(full_path) != null;
                 const size = schema.CalculateSchemaSize(w_schema);
-                _ = try orch.addWire(full_path, size);
+                const w = try orch.addWire(full_path, w_schema, size);
+                
+                // Initialize health if it's a NEW player.stats wire
+                if (!w_existed and std.mem.eql(u8, full_path, "player.stats")) {
+                    w.setAccess(std.posix.PROT.WRITE);
+                    const base_ptr: [*]u8 = @ptrCast(w.ptr());
+                    // Health is at index 8 for the original schema, index 12 for the evolved one.
+                    // We detect based on schema string.
+                    const health_offset: usize = if (std.mem.indexOf(u8, w_schema, "z:f32") != null) 12 else 8;
+                    const health_ptr: *i32 = @ptrCast(@alignCast(base_ptr + health_offset));
+                    health_ptr.* = 100;
+                    w.setAccess(std.posix.PROT.NONE);
+                }
+                
                 const struct_def = try schema.generateCStruct(allocator, full_path, w_schema);
                 defer allocator.free(struct_def);
                 try c_headers.appendSlice(struct_def);
@@ -223,19 +238,33 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
                 try guest_offsets.appendSlice("#ifndef GUEST_OFFSETS_H\n#define GUEST_OFFSETS_H\n\n");
                 var current_offset: usize = 0;
 
+                var bound_paths = std.StringHashMap(void).init(allocator);
+                defer {
+                    var it = bound_paths.keyIterator();
+                    while (it.next()) |k| allocator.free(k.*);
+                    bound_paths.deinit();
+                }
+
                 inline for (.{ "reads", "writes" }) |field| {
                     if (n_obj.get(field)) |wires| {
                         for (wires.array.items) |w_val| {
                             const wire_ref = w_val.string;
                             const wire_path = if (std.mem.indexOf(u8, wire_ref, ".") != null) try allocator.dupe(u8, wire_ref) else try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_name, wire_ref });
                             defer allocator.free(wire_path);
+
+                            const access: u32 = if (std.mem.eql(u8, field, "reads")) std.posix.PROT.READ else (std.posix.PROT.READ | std.posix.PROT.WRITE);
+
                             if (orch.getWire(wire_path)) |w| {
-                                n.bindWire(wire_ref, w);
-                                const safe_ref = try allocator.dupe(u8, wire_ref);
-                                defer allocator.free(safe_ref);
-                                for (safe_ref) |*char| if (char.* == '.') { char.* = '_'; };
-                                try guest_offsets.writer().print("#define OFFSET_{s} 0x{X}\n", .{ safe_ref, current_offset });
-                                current_offset += (w.buffer.len + 15) & ~@as(usize, 15);
+                                n.bindWire(wire_ref, w, access);
+                                
+                                if (!bound_paths.contains(wire_path)) {
+                                    try bound_paths.put(try allocator.dupe(u8, wire_path), {});
+                                    const safe_ref = try allocator.dupe(u8, wire_ref);
+                                    defer allocator.free(safe_ref);
+                                    for (safe_ref) |*char| if (char.* == '.') { char.* = '_'; };
+                                    try guest_offsets.writer().print("#define OFFSET_{s} 0x{X}\n", .{ safe_ref, current_offset });
+                                    current_offset += (w.buffer.len + 15) & ~@as(usize, 15);
+                                }
                             }
                         }
                     }

@@ -66,12 +66,80 @@ pub const Orchestrator = struct {
         return self.nodes.getPtr(path).?;
     }
 
-    pub fn addWire(self: *Orchestrator, path: []const u8, size: usize) !*wire.RawWire {
-        if (self.wires.get(path)) |existing| return existing;
-        const w = try wire.RawWire.init(self.allocator, path, size);
+    pub fn addWire(self: *Orchestrator, path: []const u8, schema_str: []const u8, size: usize) !*wire.RawWire {
+        if (self.wires.get(path)) |existing| {
+            if (std.mem.eql(u8, existing.schema_str, schema_str)) return existing;
+
+            // SCHEMA EVOLUTION: Migrate data!
+            std.debug.print("[Orchestrator] Schema changed for {s}! Migrating data...\n", .{path});
+            const new_wire = try wire.RawWire.init(self.allocator, path, schema_str, size);
+            
+            // Basic "stenciling" migration: Match fields by name
+            try self.migrateData(existing, new_wire);
+
+            // Replace existing wire
+            _ = self.wires.remove(path);
+            existing.deinit();
+            try self.wires.put(try self.allocator.dupe(u8, path), new_wire);
+            return new_wire;
+        }
+
+        const w = try wire.RawWire.init(self.allocator, path, schema_str, size);
         try self.wires.put(try self.allocator.dupe(u8, path), w);
         std.debug.print("[Orchestrator] Registered Wire: {s} ({d} bytes)\n", .{ path, size });
         return w;
+    }
+
+    fn migrateData(self: *Orchestrator, old: *wire.RawWire, new: *wire.RawWire) !void {
+        _ = self;
+        const schema = @import("schema.zig");
+        
+        // Temporarily unlock both for migration
+        old.setAccess(std.posix.PROT.READ);
+        new.setAccess(std.posix.PROT.WRITE);
+        defer {
+            old.setAccess(std.posix.PROT.NONE);
+            new.setAccess(std.posix.PROT.NONE);
+        }
+
+        var new_it = std.mem.tokenizeAny(u8, new.schema_str, ";");
+        var new_offset: usize = 0;
+        while (new_it.next()) |new_entry| {
+            var new_parts = std.mem.tokenizeAny(u8, new_entry, ":");
+            const name = new_parts.next() orelse continue;
+            const type_str = new_parts.next() orelse continue;
+            const size = schema.GetTypeSize(type_str);
+
+            // Look for this field in the old schema
+            var old_it = std.mem.tokenizeAny(u8, old.schema_str, ";");
+            var old_offset: usize = 0;
+            var found = false;
+            while (old_it.next()) |old_entry| {
+                var old_parts = std.mem.tokenizeAny(u8, old_entry, ":");
+                const old_name = old_parts.next() orelse continue;
+                const old_type = old_parts.next() orelse continue;
+                const old_size = schema.GetTypeSize(old_type);
+
+                if (std.mem.eql(u8, name, old_name)) {
+                    // Match! Copy data if types (and thus sizes) are compatible
+                    const copy_size = @min(size, old_size);
+                    const old_ptr: [*]u8 = @ptrCast(old.ptr());
+                    const new_ptr: [*]u8 = @ptrCast(new.ptr());
+                    @memcpy(new_ptr[new_offset .. new_offset + copy_size], old_ptr[old_offset .. old_offset + copy_size]);
+                    found = true;
+                    break;
+                }
+                old_offset += old_size;
+            }
+            
+            if (found) {
+                std.debug.print("  - Field '{s}' migrated.\n", .{name});
+            } else {
+                std.debug.print("  - Field '{s}' is NEW.\n", .{name});
+            }
+
+            new_offset += size;
+        }
     }
 
     pub fn poke(self: *Orchestrator, event: []const u8) !void {
@@ -102,12 +170,10 @@ pub const Orchestrator = struct {
     /// Temporarily unlocks hardware-protected memory wires before execution.
     fn executeNode(self: *Orchestrator, n: *node.Node) !void {
         _ = self;
-        // 1. UNLOCK WIRES
-        // For simplicity in this demo, we unlock everything bound to the node.
-        // In a strict build, we'd use PROT_READ for 'reads' and PROT_READ|PROT_WRITE for 'writes'.
+        // 1. UNLOCK WIRES (Granular Silicon Gating)
         var it = n.bound_wires.valueIterator();
-        while (it.next()) |w| {
-            w.*.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
+        while (it.next()) |binding| {
+            binding.wire.setAccess(binding.access);
         }
 
         // 2. EXECUTE
@@ -117,8 +183,8 @@ pub const Orchestrator = struct {
 
         // 3. LOCK WIRES (Protect the Motherboard)
         it = n.bound_wires.valueIterator();
-        while (it.next()) |w| {
-            w.*.setAccess(std.posix.PROT.NONE);
+        while (it.next()) |binding| {
+            binding.wire.setAccess(std.posix.PROT.NONE);
         }
     }
 

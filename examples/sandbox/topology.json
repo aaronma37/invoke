@@ -34,7 +34,7 @@
           "type": "luajit",
           "mode": "Heartbeat",
           "script": "wind.lua",
-          "reads": [],
+          "reads": ["player.stats"],
           "writes": ["wind"]
         }
       ]

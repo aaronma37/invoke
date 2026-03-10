@@ -7,12 +7,13 @@ pub const RawWire = struct {
     buffer: []u8,
     allocator: std.mem.Allocator,
     name: []const u8,
+    schema_str: []const u8,
     
     // The actual mapped memory address (page-aligned)
     map_ptr: [*]u8,
     map_len: usize,
 
-    pub fn init(allocator: std.mem.Allocator, name: []const u8, size: usize) !*RawWire {
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, schema_str: []const u8, size: usize) !*RawWire {
         const self = try allocator.create(RawWire);
         
         // Calculate page-aligned size
@@ -33,6 +34,7 @@ pub const RawWire = struct {
             .buffer = mmap_ptr[0..size],
             .allocator = allocator,
             .name = try allocator.dupe(u8, name),
+            .schema_str = try allocator.dupe(u8, schema_str),
             .map_ptr = mmap_ptr.ptr,
             .map_len = aligned_size,
         };
@@ -45,6 +47,7 @@ pub const RawWire = struct {
         const aligned_slice: []align(4096) u8 = @alignCast(@as([]u8, @ptrCast(slice)));
         std.posix.munmap(aligned_slice);
         self.allocator.free(self.name);
+        self.allocator.free(self.schema_str);
         self.allocator.destroy(self);
     }
 

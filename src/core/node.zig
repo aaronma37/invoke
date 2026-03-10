@@ -7,6 +7,11 @@ pub const abi = @cImport({
     @cInclude("invoke_abi.h");
 });
 
+pub const WireBinding = struct {
+    wire: *wire.RawWire,
+    access: u32,
+};
+
 /// A Node is now a generic 'Socket'. 
 /// it doesn't know about Lua or WASM; it only knows about the Handshake.
 pub const Node = struct {
@@ -21,7 +26,7 @@ pub const Node = struct {
     
     // Metadata
     triggers: std.ArrayList([]const u8),
-    bound_wires: std.StringHashMap(*wire.RawWire),
+    bound_wires: std.StringHashMap(WireBinding),
     last_mtime: i128 = 0,
 
     pub fn init(
@@ -40,7 +45,7 @@ pub const Node = struct {
             .vtable = vtable,
             .handle = handle,
             .triggers = std.ArrayList([]const u8).init(allocator),
-            .bound_wires = std.StringHashMap(*wire.RawWire).init(allocator),
+            .bound_wires = std.StringHashMap(WireBinding).init(allocator),
         };
     }
 
@@ -68,16 +73,23 @@ pub const Node = struct {
         _ = self.vtable.add_trigger.?(self.handle, event_z.ptr);
     }
 
-    pub fn bindWire(self: *Node, wire_name: []const u8, w: *wire.RawWire) void {
+    pub fn bindWire(self: *Node, wire_name: []const u8, w: *wire.RawWire, access: u32) void {
         const name_z = self.allocator.dupeZ(u8, wire_name) catch return;
         defer self.allocator.free(name_z);
         
         _ = self.vtable.bind_wire.?(self.handle, name_z.ptr, w.ptr(), w.buffer.len);
         
-        // Track binding for Silicon Gating
-        self.bound_wires.put(self.allocator.dupe(u8, wire_name) catch return, w) catch return;
+        // Track binding for Silicon Gating (mprotect)
+        if (self.bound_wires.getPtr(wire_name)) |existing| {
+            existing.access |= access;
+        } else {
+            self.bound_wires.put(self.allocator.dupe(u8, wire_name) catch return, .{
+                .wire = w,
+                .access = access,
+            }) catch return;
+        }
 
-        std.debug.print("[Node {s}] Wire bound via ABI: {s}\n", .{ self.name, wire_name });
+        std.debug.print("[Node {s}] Wire bound via ABI: {s} (Access: {X})\n", .{ self.name, wire_name, access });
     }
 
     pub fn execute(self: *Node) !void {

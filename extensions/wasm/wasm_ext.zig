@@ -13,8 +13,12 @@ const WasmNode = struct {
     context: ?*c.wasmtime_context_t,
     module: ?*c.wasmtime_module_t,
     instance: c.wasmtime_instance_t,
+    
+    // CACHED EXPORTS
     memory: c.wasmtime_memory_t,
     has_memory: bool = false,
+    tick_func: ?c.wasmtime_func_t = null,
+    
     guest_offset: usize = 0,
     allocator: std.mem.Allocator,
     
@@ -35,20 +39,35 @@ const WasmNode = struct {
         self.allocator = allocator;
         self.bindings = std.ArrayList(SyncBinding).init(allocator);
         
-        self.engine = c.wasm_engine_new() orelse return error.WasmEngineNewFailed;
-        self.store = c.wasmtime_store_new(self.engine, null, null) orelse return error.WasmStoreNewFailed;
+        self.engine = c.wasm_engine_new() orelse {
+            std.debug.print("[WASM Ext] wasm_engine_new failed\n", .{});
+            return error.WasmEngineNewFailed;
+        };
+        self.store = c.wasmtime_store_new(self.engine, null, null) orelse {
+            std.debug.print("[WASM Ext] wasmtime_store_new failed\n", .{});
+            return error.WasmStoreNewFailed;
+        };
         self.context = c.wasmtime_store_context(self.store);
 
-        const wasm_bytes = try std.fs.cwd().readFileAlloc(allocator, std.mem.span(script_path), 10 * 1024 * 1024);
+        const wasm_bytes = std.fs.cwd().readFileAlloc(allocator, std.mem.span(script_path), 10 * 1024 * 1024) catch |err| {
+            std.debug.print("[WASM Ext] Failed to read script {s}: {any}\n", .{ script_path, err });
+            return err;
+        };
         defer allocator.free(wasm_bytes);
 
         var err: ?*c.wasmtime_error_t = null;
         err = c.wasmtime_module_new(self.engine, wasm_bytes.ptr, wasm_bytes.len, &self.module);
-        if (err != null) return error.WasmModuleNewFailed;
+        if (err != null) {
+            std.debug.print("[WASM Ext] wasmtime_module_new failed\n", .{});
+            return error.WasmModuleNewFailed;
+        }
 
         var trap: ?*c.wasm_trap_t = null;
         err = c.wasmtime_instance_new(self.context, self.module, null, 0, &self.instance, &trap);
-        if (err != null or trap != null) return error.WasmInstantiateFailed;
+        if (err != null or trap != null) {
+            std.debug.print("[WASM Ext] wasmtime_instance_new failed (err: {?}, trap: {?})\n", .{ err, trap });
+            return error.WasmInstantiateFailed;
+        }
 
         var export_val: c.wasmtime_extern_t = undefined;
         if (c.wasmtime_instance_export_get(self.context, &self.instance, "memory", 6, &export_val)) {
@@ -58,12 +77,23 @@ const WasmNode = struct {
             }
         }
 
+        if (c.wasmtime_instance_export_get(self.context, &self.instance, "tick", 4, &export_val)) {
+            if (export_val.kind == c.WASMTIME_EXTERN_FUNC) {
+                self.tick_func = export_val.of.func;
+            }
+        }
+
         if (c.wasmtime_instance_export_get(self.context, &self.instance, "get_wire_buffer", 15, &export_val)) {
             var results: [1]c.wasmtime_val_t = undefined;
             err = c.wasmtime_func_call(self.context, &export_val.of.func, null, 0, &results, 1, &trap);
             if (err == null and trap == null) {
                 self.guest_offset = @intCast(results[0].of.i32);
+                std.debug.print("[WASM Ext] Guest wire buffer offset: 0x{X}\n", .{ self.guest_offset });
+            } else {
+                std.debug.print("[WASM Ext Error] get_wire_buffer call failed\n", .{});
             }
+        } else {
+            std.debug.print("[WASM Ext Error] 'get_wire_buffer' export not found!\n", .{});
         }
 
         _ = name;
@@ -102,7 +132,6 @@ export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopa
     }
 
     // For now, we assume all bound wires are synced in/out.
-    // In a real 'Pro' engine, the kernel would tell us if it's 'reads' or 'writes'.
     node.bindings.append(.{
         .host_ptr = @ptrCast(ptr.?),
         .guest_offset = current_offset,
@@ -128,11 +157,13 @@ export fn tick(handle: abi.invoke_node_h) abi.invoke_status_t {
         }
 
         // 2. CALL GUEST
-        var func_val: c.wasmtime_extern_t = undefined;
-        if (c.wasmtime_instance_export_get(ctx, &node.instance, "tick", 4, &func_val)) {
+        if (node.tick_func) |f| {
             var trap: ?*c.wasm_trap_t = null;
-            const err = c.wasmtime_func_call(ctx, &func_val.of.func, null, 0, null, 0, &trap);
-            if (err != null or trap != null) return c.INVOKE_STATUS_ERROR;
+            const err = c.wasmtime_func_call(ctx, &f, null, 0, null, 0, &trap);
+            if (err != null or trap != null) {
+                std.debug.print("[WASM Ext Error] Tick failed (err: {?}, trap: {?})\n", .{ err, trap });
+                return c.INVOKE_STATUS_ERROR;
+            }
         }
 
         // 3. O(1) SYNC OUT: No string lookups!
