@@ -1,0 +1,21 @@
+# Zig build artifacts
+zig-cache/
+.zig-cache/
+zig-out/
+
+# Invoke dynamic extensions (compiled)
+ext/*.so
+ext/*.dll
+ext/*.dylib
+
+# Generated headers (Single Source of Truth artifacts)
+gen/
+gen_wires.lua
+
+# WASM build artifacts
+*.wasm
+
+# OS specific
+.DS_Store
+*.swp
+*~

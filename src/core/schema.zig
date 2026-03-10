@@ -1,0 +1,144 @@
+const std = @import("std");
+
+pub const TypeTag = enum {
+    f32,
+    f64,
+    i32,
+    u32,
+    bool,
+};
+
+pub fn TypeFromTag(comptime tag: TypeTag) type {
+    return switch (tag) {
+        .f32 => f32,
+        .f64 => f64,
+        .i32 => i32,
+        .u32 => u32,
+        .bool => bool,
+    };
+}
+
+/// A Field definition for a Wire
+pub const Field = struct {
+    name: []const u8,
+    type_tag: TypeTag,
+};
+
+/// This function takes an array of Fields and uses Zig's @Type (reify)
+/// to dynamically construct an 'extern struct' at comptime.
+pub fn CreateWireType(comptime fields: []const Field) type {
+    var struct_fields: [fields.len]std.builtin.Type.StructField = undefined;
+
+    for (fields, 0..) |field, i| {
+        const T = TypeFromTag(field.type_tag);
+        // Ensure name is null-terminated for @Type (reify)
+        const field_name: [:0]const u8 = std.fmt.comptimePrint("{s}", .{field.name});
+        struct_fields[i] = .{
+            .name = field_name,
+            .type = T,
+            .default_value_ptr = null,
+            .is_comptime = false,
+            .alignment = @alignOf(T),
+        };
+    }
+
+    const type_info = std.builtin.Type{
+        .@"struct" = .{
+            .layout = .@"extern",
+            .fields = &struct_fields,
+            .decls = &.{},
+            .is_tuple = false,
+        },
+    };
+
+    return @Type(type_info);
+}
+
+/// A simple 'comptime' parser that converts a basic DSL string into Fields.
+/// Format: "name:type;name:type"
+pub fn ParseSchema(comptime input: []const u8) []const Field {
+    @setEvalBranchQuota(2000);
+    var field_count = 0;
+    for (input) |c| {
+        if (c == ';') field_count += 1;
+    }
+    if (input.len > 0 and input[input.len - 1] != ';') field_count += 1;
+
+    var fields: [field_count]Field = undefined;
+    var current_field = 0;
+
+    var it = std.mem.tokenizeAny(u8, input, ";");
+    while (it.next()) |entry| {
+        var parts = std.mem.tokenizeAny(u8, entry, ":");
+        const name = parts.next() orelse @compileError("Missing field name");
+        const type_str = parts.next() orelse @compileError("Missing field type");
+
+        const tag = if (std.mem.eql(u8, type_str, "f32"))
+            TypeTag.f32
+        else if (std.mem.eql(u8, type_str, "i32"))
+            TypeTag.i32
+        else if (std.mem.eql(u8, type_str, "u32"))
+            TypeTag.u32
+        else if (std.mem.eql(u8, type_str, "bool"))
+            TypeTag.bool
+        else
+            @compileError("Unknown type: " ++ type_str);
+
+        fields[current_field] = .{ .name = name, .type_tag = tag };
+        current_field += 1;
+    }
+
+    const final_fields = fields;
+    return &final_fields;
+}
+
+pub fn GetTypeSize(type_str: []const u8) usize {
+    if (std.mem.eql(u8, type_str, "f32")) return @sizeOf(f32);
+    if (std.mem.eql(u8, type_str, "f64")) return @sizeOf(f64);
+    if (std.mem.eql(u8, type_str, "i32")) return @sizeOf(i32);
+    if (std.mem.eql(u8, type_str, "u32")) return @sizeOf(u32);
+    if (std.mem.eql(u8, type_str, "bool")) return @sizeOf(bool);
+    return 0;
+}
+
+pub fn CalculateSchemaSize(input: []const u8) usize {
+    var total_size: usize = 0;
+    var it = std.mem.tokenizeAny(u8, input, ";");
+    while (it.next()) |entry| {
+        var parts = std.mem.tokenizeAny(u8, entry, ":");
+        _ = parts.next(); // name
+        const type_str = parts.next() orelse continue;
+        total_size += GetTypeSize(type_str);
+    }
+    return total_size;
+}
+
+pub fn generateCStruct(allocator: std.mem.Allocator, name: []const u8, schema_str: []const u8) ![]const u8 {
+    var list = std.ArrayList(u8).init(allocator);
+    try list.writer().print("typedef struct {{\n", .{});
+    
+    var it = std.mem.tokenizeAny(u8, schema_str, ";");
+    while (it.next()) |entry| {
+        var parts = std.mem.tokenizeAny(u8, entry, ":");
+        const f_name = parts.next() orelse continue;
+        const f_type = parts.next() orelse continue;
+        
+        const c_type = if (std.mem.eql(u8, f_type, "f32")) "float"
+                  else if (std.mem.eql(u8, f_type, "f64")) "double"
+                  else if (std.mem.eql(u8, f_type, "i32")) "int32_t"
+                  else if (std.mem.eql(u8, f_type, "u32")) "uint32_t"
+                  else if (std.mem.eql(u8, f_type, "bool")) "bool"
+                  else "uint8_t";
+                  
+        try list.writer().print("    {s} {s};\n", .{ c_type, f_name });
+    }
+    
+    // Replace dots with underscores for valid C identifier
+    const safe_name = try allocator.dupe(u8, name);
+    defer allocator.free(safe_name);
+    for (safe_name) |*c| if (c.* == '.') { c.* = '_'; };
+
+    try list.writer().print("}} {s}_t;\n\n", .{safe_name});
+    return list.toOwnedSlice();
+}
+

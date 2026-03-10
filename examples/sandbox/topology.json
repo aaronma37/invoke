@@ -1,0 +1,43 @@
+{
+  "namespaces": {
+    "player": {
+      "wires": {
+        "stats": "x:f32;y:f32;health:i32"
+      },
+      "nodes": [
+        {
+          "name": "physics",
+          "type": "wasm",
+          "mode": "Heartbeat",
+          "script": "physics.wasm",
+          "reads": ["stats", "environment.wind"],
+          "writes": ["stats"]
+        },
+        {
+          "name": "damage_system",
+          "type": "luajit",
+          "mode": "Poke",
+          "triggers": ["on_collision"],
+          "script": "damage.lua",
+          "reads": ["stats"],
+          "writes": ["stats"]
+        }
+      ]
+    },
+    "environment": {
+      "wires": {
+        "wind": "force:f32;direction:f32"
+      },
+      "nodes": [
+        {
+          "name": "wind_generator",
+          "type": "luajit",
+          "mode": "Heartbeat",
+          "script": "wind.lua",
+          "reads": [],
+          "writes": ["wind"]
+        }
+      ]
+    }
+  }
+}
