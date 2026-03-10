@@ -9,18 +9,28 @@ const c = @cImport({
 
 const abi = c;
 
+var global_log_handler: ?abi.invoke_log_fn = null;
+
 const LuaNode = struct {
     L: *c.lua_State,
+    name: []const u8,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, name: [*c]const u8, script_path: [*c]const u8) !*LuaNode {
         const self = try allocator.create(LuaNode);
         self.allocator = allocator;
+        self.name = try allocator.dupe(u8, std.mem.span(name));
         
         self.L = c.luaL_newstate() orelse return error.LuaInitFailed;
         c.luaL_openlibs(self.L);
         
-        _ = name;
+        // Expose invoke.log to Lua
+        c.lua_newtable(self.L);
+        c.lua_pushlightuserdata(self.L, self);
+        c.lua_pushcclosure(self.L, luaLog, 1);
+        c.lua_setfield(self.L, -2, "log");
+        c.lua_setglobal(self.L, "invoke");
+
         // Initial load
         _ = c.luaL_loadfile(self.L, script_path);
         _ = c.lua_pcall(self.L, 0, c.LUA_MULTRET, 0);
@@ -30,16 +40,33 @@ const LuaNode = struct {
 
     pub fn deinit(self: *LuaNode) void {
         c.lua_close(self.L);
+        self.allocator.free(self.name);
         self.allocator.destroy(self);
     }
 };
 
+fn luaLog(L: ?*c.lua_State) callconv(.C) c_int {
+    const node_ptr: *LuaNode = @ptrCast(@alignCast(c.lua_touserdata(L, c.lua_upvalueindex(1))));
+    const message = c.luaL_checklstring(L, 1, null);
+    
+    if (global_log_handler) |log| {
+        log.?(c.INVOKE_LOG_INFO, node_ptr.name.ptr, message);
+    }
+    return 0;
+}
+
 // --- ABI IMPLEMENTATION ---
+
+export fn set_log_handler(handler: abi.invoke_log_fn) void {
+    global_log_handler = handler;
+}
 
 export fn create_node(name: [*c]const u8, script_path: [*c]const u8) abi.invoke_node_h {
     const node = LuaNode.init(std.heap.c_allocator, name, script_path) catch return null;
     return @ptrCast(node);
 }
+
+// ... rest of file (update export vtable)
 
 export fn destroy_node(handle: abi.invoke_node_h) void {
     const node: *LuaNode = @ptrCast(@alignCast(handle));
@@ -111,5 +138,6 @@ export fn invoke_ext_init() abi.invoke_extension_t {
         .tick = tick,
         .reload_node = reload_node,
         .add_trigger = add_trigger,
+        .set_log_handler = set_log_handler,
     };
 }

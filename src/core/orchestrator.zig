@@ -170,6 +170,7 @@ pub const Orchestrator = struct {
     /// Temporarily unlocks hardware-protected memory wires before execution.
     fn executeNode(self: *Orchestrator, n: *node.Node) !void {
         _ = self;
+        std.debug.print("[Orchestrator] Executing node {s}...\n", .{ n.name });
         // 1. UNLOCK WIRES (Granular Silicon Gating)
         var it = n.bound_wires.valueIterator();
         while (it.next()) |binding| {

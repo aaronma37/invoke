@@ -125,7 +125,7 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
         if (c.setjmp(&jump_buffer) == 0) {
             try orch.tick();
         } else {
-            std.debug.print("\n[Kernel] RECOVERY: A Node attempted a memory violation! Motherboard survives.\n", .{});
+            std.debug.print("\n[Kernel] RECOVERY (Frame {d}): A Node attempted a memory violation! Motherboard survives.\n", .{frame_count});
         }
         is_recovering = false;
         

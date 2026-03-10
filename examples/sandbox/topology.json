@@ -9,7 +9,7 @@
           "name": "physics",
           "type": "wasm",
           "mode": "Heartbeat",
-          "script": "physics.wasm",
+          "script": "examples/sandbox/physics.wasm",
           "reads": ["stats", "environment.wind"],
           "writes": ["stats"]
         },
@@ -18,7 +18,7 @@
           "type": "luajit",
           "mode": "Poke",
           "triggers": ["on_collision"],
-          "script": "damage.lua",
+          "script": "examples/sandbox/damage.lua",
           "reads": ["stats"],
           "writes": ["stats"]
         }
@@ -33,7 +33,7 @@
           "name": "wind_generator",
           "type": "luajit",
           "mode": "Heartbeat",
-          "script": "wind.lua",
+          "script": "examples/sandbox/wind.lua",
           "reads": ["player.stats"],
           "writes": ["wind"]
         }

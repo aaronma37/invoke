@@ -7,12 +7,15 @@ const c = @cImport({
 
 const abi = c;
 
+var global_log_handler: ?abi.invoke_log_fn = null;
+
 const WasmNode = struct {
     engine: ?*c.wasm_engine_t,
     store: ?*c.wasmtime_store_t,
     context: ?*c.wasmtime_context_t,
     module: ?*c.wasmtime_module_t,
     instance: c.wasmtime_instance_t,
+    name: []const u8,
     
     // CACHED EXPORTS
     memory: c.wasmtime_memory_t,
@@ -34,9 +37,10 @@ const WasmNode = struct {
         is_output: bool,
     };
 
-    pub fn init(allocator: std.mem.Allocator, name: [*c]const u8, script_path: [*c]const u8) !*WasmNode {
+    pub fn init(allocator: std.mem.Allocator, name_c: [*c]const u8, script_path: [*c]const u8) !*WasmNode {
         const self = try allocator.create(WasmNode);
         self.allocator = allocator;
+        self.name = try allocator.dupe(u8, std.mem.span(name_c));
         self.bindings = std.ArrayList(SyncBinding).init(allocator);
         
         self.engine = c.wasm_engine_new() orelse {
@@ -62,8 +66,30 @@ const WasmNode = struct {
             return error.WasmModuleNewFailed;
         }
 
+        // CREATE HOST IMPORTS (invoke_log)
+        // Signature: (i32, i32, i32) -> ()
+        var params_arr: [3]*c.wasm_valtype_t = undefined;
+        params_arr[0] = c.wasm_valtype_new(c.WASM_I32).?;
+        params_arr[1] = c.wasm_valtype_new(c.WASM_I32).?;
+        params_arr[2] = c.wasm_valtype_new(c.WASM_I32).?;
+        
+        var param_vec: c.wasm_valtype_vec_t = undefined;
+        c.wasm_valtype_vec_new(&param_vec, 3, @ptrCast(&params_arr));
+        
+        var result_vec: c.wasm_valtype_vec_t = undefined;
+        c.wasm_valtype_vec_new_empty(&result_vec);
+        
+        const functype = c.wasm_functype_new(&param_vec, &result_vec);
+        
+        var log_func: c.wasmtime_func_t = undefined;
+        c.wasmtime_func_new(self.context, functype, @ptrCast(&wasm_log_callback), self, null, &log_func);
+        c.wasm_functype_delete(functype);
+
+        // In a real project, we'd use wasmtime_linker to handle imports properly.
+        const imports: [1]c.wasmtime_extern_t = .{ .{ .kind = c.WASMTIME_EXTERN_FUNC, .of = .{ .func = log_func } } };
+
         var trap: ?*c.wasm_trap_t = null;
-        err = c.wasmtime_instance_new(self.context, self.module, null, 0, &self.instance, &trap);
+        err = c.wasmtime_instance_new(self.context, self.module, &imports, 1, &self.instance, &trap);
         if (err != null or trap != null) {
             std.debug.print("[WASM Ext] wasmtime_instance_new failed (err: {?}, trap: {?})\n", .{ err, trap });
             return error.WasmInstantiateFailed;
@@ -96,7 +122,6 @@ const WasmNode = struct {
             std.debug.print("[WASM Ext Error] 'get_wire_buffer' export not found!\n", .{});
         }
 
-        _ = name;
         return self;
     }
 
@@ -105,23 +130,59 @@ const WasmNode = struct {
         if (self.module) |m| c.wasmtime_module_delete(m);
         if (self.store) |s| c.wasmtime_store_delete(s);
         if (self.engine) |e| c.wasm_engine_delete(e);
+        self.allocator.free(self.name);
         self.allocator.destroy(self);
     }
 };
 
+fn wasm_log_callback(
+    env: ?*anyopaque,
+    caller: ?*c.wasmtime_context_t,
+    args: [*c]const c.wasmtime_val_t,
+    nargs: usize,
+    results: [*c]c.wasmtime_val_t,
+    nresults: usize
+) callconv(.C) ?*c.wasm_trap_t {
+    _ = results; _ = nresults; _ = nargs;
+    const self: *WasmNode = @ptrCast(@alignCast(env.?));
+    const level: abi.invoke_log_level_t = @intCast(args[0].of.i32);
+    const ptr: usize = @intCast(args[1].of.i32);
+    const len: usize = @intCast(args[2].of.i32);
+
+    const data_ptr = c.wasmtime_memory_data(caller, &self.memory);
+    const message = data_ptr[ptr .. ptr + len];
+
+    if (global_log_handler) |log| {
+        // Null-terminate for C-ABI safety
+        var buf: [1024]u8 = undefined;
+        const safe_len = @min(message.len, 1023);
+        @memcpy(buf[0..safe_len], message[0..safe_len]);
+        buf[safe_len] = 0;
+        log.?(level, self.name.ptr, &buf);
+    }
+
+    return null;
+}
+
 // --- ABI IMPLEMENTATION ---
+
+export fn set_log_handler(handler: abi.invoke_log_fn) void {
+    global_log_handler = handler;
+}
 
 export fn create_node(name: [*c]const u8, script_path: [*c]const u8) abi.invoke_node_h {
     const node = WasmNode.init(std.heap.c_allocator, name, script_path) catch return null;
     return @ptrCast(node);
 }
 
+// ... rest of file (update export vtable)
+
 export fn destroy_node(handle: abi.invoke_node_h) void {
     const node: *WasmNode = @ptrCast(@alignCast(handle));
     node.deinit();
 }
 
-export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopaque, size: usize) abi.invoke_status_t {
+export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopaque, access: usize) abi.invoke_status_t {
     const node: *WasmNode = @ptrCast(@alignCast(handle));
     
     // DYNAMIC OFFSET CALCULATION:
@@ -131,15 +192,19 @@ export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopa
         current_offset += (b.size + 15) & ~@as(usize, 15); // 16-byte alignment
     }
 
-    // For now, we assume all bound wires are synced in/out.
+    // HACK: In this demo, we know the size based on the name.
+    // In a real engine, the ABI would pass both size AND access.
+    const wire_name = std.mem.span(name);
+    const size: usize = if (std.mem.indexOf(u8, wire_name, "stats") != null) 12 else 8;
+
     node.bindings.append(.{
         .host_ptr = @ptrCast(ptr.?),
         .guest_offset = current_offset,
         .size = size,
-        .is_output = true, // Simplified: always sync back for now
+        .is_output = (access & 2 != 0), // PROT_WRITE bit
     }) catch return c.INVOKE_STATUS_ERROR;
 
-    std.debug.print("[WASM Ext] Bound wire '{s}' to guest offset 0x{X}\n", .{ std.mem.span(name), current_offset });
+    std.debug.print("[WASM Ext] Bound wire '{s}' to guest offset 0x{X} (Output: {any})\n", .{ wire_name, current_offset, (access & 2 != 0) });
     return c.INVOKE_STATUS_OK;
 }
 
@@ -197,5 +262,6 @@ export fn invoke_ext_init() abi.invoke_extension_t {
         .tick = tick,
         .reload_node = reload_node,
         .add_trigger = add_trigger,
+        .set_log_handler = set_log_handler,
     };
 }

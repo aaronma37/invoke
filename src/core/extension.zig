@@ -1,6 +1,20 @@
 const std = @import("std");
 const node = @import("node.zig");
 
+fn kernelLog(level: node.abi.invoke_log_level_t, node_name: [*c]const u8, message: [*c]const u8) callconv(.C) void {
+    const level_str = switch (level) {
+        node.abi.INVOKE_LOG_DEBUG => "DEBUG",
+        node.abi.INVOKE_LOG_INFO => "INFO ",
+        node.abi.INVOKE_LOG_WARN => "WARN ",
+        node.abi.INVOKE_LOG_ERROR => "ERROR",
+        node.abi.INVOKE_LOG_FATAL => "FATAL",
+        else => "?????",
+    };
+    
+    // In a real project, we'd use a colorized, timestamped logger here.
+    std.debug.print("[{s}] [{s}] {s}\n", .{ level_str, std.mem.span(node_name), std.mem.span(message) });
+}
+
 pub const Extension = struct {
     lib: std.DynLib,
     vtable: node.abi.invoke_extension_t,
@@ -19,6 +33,11 @@ pub const Extension = struct {
             
         // 3. Get the VTable (The Handshake)
         self.vtable = init_fn.?();
+        
+        // 4. Inject Host Services (v1.1)
+        if (self.vtable.set_log_handler) |set_log| {
+            set_log(kernelLog);
+        }
         
         return self;
     }

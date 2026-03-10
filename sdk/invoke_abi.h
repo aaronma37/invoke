@@ -23,6 +23,20 @@ typedef enum {
  */
 typedef void* invoke_node_h;
 
+typedef enum {
+    INVOKE_LOG_DEBUG = 0,
+    INVOKE_LOG_INFO = 1,
+    INVOKE_LOG_WARN = 2,
+    INVOKE_LOG_ERROR = 3,
+    INVOKE_LOG_FATAL = 4,
+} invoke_log_level_t;
+
+/**
+ * The Host-side logging callback.
+ * Extensions call this to send structured telemetry back to the Motherboard.
+ */
+typedef void (*invoke_log_fn)(invoke_log_level_t level, const char* node_name, const char* message);
+
 /**
  * Function pointers that the Extension MUST export for the Kernel to use.
  */
@@ -40,6 +54,9 @@ typedef struct {
 
     // 4. Events (Poke)
     invoke_status_t (*add_trigger)(invoke_node_h node, const char* event_name);
+
+    // 5. Host Services (New in v1.1)
+    void (*set_log_handler)(invoke_log_fn log_handler);
 } invoke_extension_t;
 
 /**

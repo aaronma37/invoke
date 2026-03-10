@@ -1,10 +1,28 @@
 const invoke = @import("invoke.zig");
 
-export fn tick() void {
-    const stats = invoke.getWire(invoke.wires.player_stats_t, "stats");
-    const wind = invoke.getWire(invoke.wires.environment_wind_t, "environment_wind");
+// Hardcoded for the sandbox topology
+const OFFSET_stats = 0x0;
+const OFFSET_environment_wind = 0x10;
 
-    // Logic is now clean and type-safe!
+pub const player_stats_t = extern struct {
+    x: f32,
+    y: f32,
+    health: i32,
+};
+
+pub const environment_wind_t = extern struct {
+    force: f32,
+    direction: f32,
+};
+
+export fn tick() void {
+    const stats = invoke.getWire(player_stats_t, OFFSET_stats);
+    const wind = invoke.getWire(environment_wind_t, OFFSET_environment_wind);
+
     stats.x += wind.force;
     stats.health -= 2;
+
+    if (stats.health < 50) {
+        invoke.info("Player health is low! Applying critical physics update.");
+    }
 }

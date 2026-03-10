@@ -11,4 +11,8 @@ function tick()
     -- Oscillate wind force between -2.0 and 2.0
     wind.force = math.sin(timer) * 2.0
     wind.direction = 1.0
+    
+    if math.abs(wind.force) > 1.8 then
+        invoke.log("Extreme wind conditions detected!")
+    end
 end
