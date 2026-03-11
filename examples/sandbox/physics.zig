@@ -1,4 +1,4 @@
-const invoke = @import("invoke.zig");
+const moontide = @import("moontide.zig");
 
 // Hardcoded for the sandbox topology
 const OFFSET_stats = 0x0;
@@ -16,14 +16,14 @@ pub const environment_wind_t = extern struct {
 };
 
 export fn tick() void {
-    const stats = invoke.getWire(player_stats_t, OFFSET_stats);
-    const wind = invoke.getWire(environment_wind_t, OFFSET_environment_wind);
+    const stats = moontide.getWire(player_stats_t, OFFSET_stats);
+    const wind = moontide.getWire(environment_wind_t, OFFSET_environment_wind);
 
     stats.x += wind.force;
     stats.health -= 2;
 
     if (stats.health < 50) {
-        invoke.info("Player health is low! Poking damage system.");
-        invoke.poke("on_collision");
+        moontide.info("Player health is low! Poking damage system.");
+        moontide.poke("on_collision");
     }
 }

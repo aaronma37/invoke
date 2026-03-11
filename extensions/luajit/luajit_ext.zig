@@ -6,13 +6,13 @@ const c = @cImport({
     @cInclude("lua.h");
     @cInclude("lualib.h");
     @cInclude("lauxlib.h");
-    @cInclude("invoke_abi.h");
+    @cInclude("moontide.h");
 });
 
 const abi = c;
 
-var global_log_handler: ?abi.invoke_log_fn = null;
-var global_poke_handler: ?abi.invoke_poke_fn = null;
+var global_log_handler: ?abi.moontide_log_fn = null;
+var global_poke_handler: ?abi.moontide_poke_fn = null;
 
 const LuaNode = struct {
     L: *c.lua_State,
@@ -27,7 +27,7 @@ const LuaNode = struct {
         self.L = c.luaL_newstate() orelse return error.LuaInitFailed;
         c.luaL_openlibs(self.L);
         
-        // Expose invoke table to Lua
+        // Expose moontide table to Lua
         c.lua_newtable(self.L);
         
         c.lua_pushlightuserdata(self.L, self);
@@ -37,7 +37,7 @@ const LuaNode = struct {
         c.lua_pushcfunction(self.L, luaPoke);
         c.lua_setfield(self.L, -2, "poke");
         
-        c.lua_setglobal(self.L, "invoke");
+        c.lua_setglobal(self.L, "moontide");
 
         const s_path = std.mem.span(script_path);
         if (!std.mem.eql(u8, s_path, "none")) {
@@ -63,7 +63,7 @@ fn luaLog(L: ?*c.lua_State) callconv(.C) c_int {
     const message = c.luaL_checklstring(L, 1, null);
     
     if (global_log_handler) |log| {
-        log.?(c.INVOKE_LOG_INFO, node_ptr.name.ptr, message);
+        log.?(c.MOONTIDE_LOG_INFO, node_ptr.name.ptr, message);
     }
     return 0;
 }
@@ -78,27 +78,27 @@ fn luaPoke(L: ?*c.lua_State) callconv(.C) c_int {
 
 // --- ABI IMPLEMENTATION ---
 
-export fn set_log_handler(handler: abi.invoke_log_fn) void {
+export fn set_log_handler(handler: abi.moontide_log_fn) void {
     global_log_handler = handler;
 }
 
-export fn set_poke_handler(handler: abi.invoke_poke_fn) void {
+export fn set_poke_handler(handler: abi.moontide_poke_fn) void {
     global_poke_handler = handler;
 }
 
 export fn set_orchestrator_handler(orch: ?*anyopaque) void { _ = orch; }
 
-export fn create_node(name: [*c]const u8, script_path: [*c]const u8) abi.invoke_node_h {
+export fn create_node(name: [*c]const u8, script_path: [*c]const u8) abi.moontide_node_h {
     const node = LuaNode.init(std.heap.c_allocator, name, script_path) catch return null;
     return @ptrCast(node);
 }
 
-export fn destroy_node(handle: abi.invoke_node_h) void {
+export fn destroy_node(handle: abi.moontide_node_h) void {
     const node: *LuaNode = @ptrCast(@alignCast(handle));
     node.deinit();
 }
 
-export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopaque, access: usize) abi.invoke_status_t {
+export fn bind_wire(handle: abi.moontide_node_h, name: [*c]const u8, ptr: ?*anyopaque, access: usize) abi.moontide_status_t {
     sandbox.checkPoints();
     const node: *LuaNode = @ptrCast(@alignCast(handle));
     _ = access;
@@ -107,14 +107,14 @@ export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopa
     
     var buf: [256]u8 = undefined;
     const wire_name = std.mem.span(name);
-    const global_name = std.fmt.bufPrintZ(&buf, "wire_{s}", .{wire_name}) catch return c.INVOKE_STATUS_ERROR;
+    const global_name = std.fmt.bufPrintZ(&buf, "wire_{s}", .{wire_name}) catch return c.MOONTIDE_STATUS_ERROR;
     for (global_name) |*char| if (char.* == '.') { char.* = '_'; };
 
     c.lua_setglobal(node.L, global_name.ptr);
-    return c.INVOKE_STATUS_OK;
+    return c.MOONTIDE_STATUS_OK;
 }
 
-export fn tick(handle: abi.invoke_node_h) abi.invoke_status_t {
+export fn tick(handle: abi.moontide_node_h) abi.moontide_status_t {
     const node: *LuaNode = @ptrCast(@alignCast(handle));
     
     c.lua_getglobal(node.L, "tick");
@@ -123,37 +123,37 @@ export fn tick(handle: abi.invoke_node_h) abi.invoke_status_t {
             const err = c.lua_tolstring(node.L, -1, null);
             std.debug.print("[LuaJIT Extension Error] {s}\n", .{err});
             c.lua_pop(node.L, 1);
-            return c.INVOKE_STATUS_ERROR;
+            return c.MOONTIDE_STATUS_ERROR;
         }
     } else {
         c.lua_pop(node.L, 1);
     }
     
-    return c.INVOKE_STATUS_OK;
+    return c.MOONTIDE_STATUS_OK;
 }
 
-export fn reload_node(handle: abi.invoke_node_h, script_path: [*c]const u8) abi.invoke_status_t {
+export fn reload_node(handle: abi.moontide_node_h, script_path: [*c]const u8) abi.moontide_status_t {
     const node: *LuaNode = @ptrCast(@alignCast(handle));
     
     if (c.luaL_loadfile(node.L, script_path) != c.LUA_OK or c.lua_pcall(node.L, 0, c.LUA_MULTRET, 0) != c.LUA_OK) {
         const err = c.lua_tolstring(node.L, -1, null);
         std.debug.print("[LuaJIT Extension Reload Error] {s}\n", .{err});
         c.lua_pop(node.L, 1);
-        return c.INVOKE_STATUS_ERROR;
+        return c.MOONTIDE_STATUS_ERROR;
     }
     
-    return c.INVOKE_STATUS_OK;
+    return c.MOONTIDE_STATUS_OK;
 }
 
-export fn add_trigger(handle: abi.invoke_node_h, event_name: [*c]const u8) abi.invoke_status_t {
+export fn add_trigger(handle: abi.moontide_node_h, event_name: [*c]const u8) abi.moontide_status_t {
     _ = handle;
     _ = event_name;
-    return c.INVOKE_STATUS_OK;
+    return c.MOONTIDE_STATUS_OK;
 }
 
 // --- ENTRY POINT ---
 
-export fn invoke_ext_init() abi.invoke_extension_t {
+export fn moontide_ext_init() abi.moontide_extension_t {
     return .{
         .create_node = create_node,
         .destroy_node = destroy_node,

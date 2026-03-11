@@ -106,6 +106,8 @@ pub fn GetTypeSize(type_str: []const u8) usize {
                   else if (std.mem.eql(u8, base_type, "f64")) @sizeOf(f64)
                   else if (std.mem.eql(u8, base_type, "i32")) @sizeOf(i32)
                   else if (std.mem.eql(u8, base_type, "u32")) @sizeOf(u32)
+                  else if (std.mem.eql(u8, base_type, "u8")) @sizeOf(u8)
+                  else if (std.mem.eql(u8, base_type, "i8")) @sizeOf(i8)
                   else if (std.mem.eql(u8, base_type, "bool")) @sizeOf(bool)
                   else 0;
     
@@ -158,5 +160,21 @@ pub fn generateCStruct(allocator: std.mem.Allocator, name: []const u8, schema_st
 
     try list.writer().print("}} {s}_t;\n\n", .{safe_name});
     return list.toOwnedSlice();
+}
+
+test "CalculateSchemaSize" {
+    try std.testing.expectEqual(@as(usize, 8), CalculateSchemaSize("x:f32;y:f32"));
+    try std.testing.expectEqual(@as(usize, 4004), CalculateSchemaSize("count:i32;px:f32[1000]"));
+}
+
+test "generateCStruct" {
+    const allocator = std.testing.allocator;
+    const c_struct = try generateCStruct(allocator, "swarm.boids", "count:i32;px:f32[1000]");
+    defer allocator.free(c_struct);
+
+    try std.testing.expect(std.mem.indexOf(u8, c_struct, "typedef struct {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, c_struct, "int32_t count;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, c_struct, "float px[1000];") != null);
+    try std.testing.expect(std.mem.indexOf(u8, c_struct, "} swarm_boids_t;") != null);
 }
 

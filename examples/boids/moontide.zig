@@ -1,11 +1,11 @@
 const std = @import("std");
 
-/// The Invoke WASM Guest SDK
+/// The Moontide WASM Guest SDK
 /// This provides a clean interface for Zig WASM nodes to interact with the Motherboard.
 
 // Host Imports (Injected by WASM Extension)
-extern fn invoke_log(level: i32, ptr: [*]const u8, len: usize) void;
-extern fn invoke_poke(ptr: [*]const u8, len: usize) void;
+extern fn moontide_log(level: i32, ptr: [*]const u8, len: usize) void;
+extern fn moontide_poke(ptr: [*]const u8, len: usize) void;
 
 pub const LogLevel = enum(i32) {
     Debug = 0,
@@ -16,7 +16,7 @@ pub const LogLevel = enum(i32) {
 };
 
 pub fn log(level: LogLevel, message: []const u8) void {
-    invoke_log(@intFromEnum(level), message.ptr, message.len);
+    moontide_log(@intFromEnum(level), message.ptr, message.len);
 }
 
 pub fn info(message: []const u8) void { log(.Info, message); }
@@ -24,7 +24,7 @@ pub fn warn(message: []const u8) void { log(.Warn, message); }
 pub fn err(message: []const u8) void { log(.Error, message); }
 
 pub fn poke(event_name: []const u8) void {
-    invoke_poke(event_name.ptr, event_name.len);
+    moontide_poke(event_name.ptr, event_name.len);
 }
 
 // The shared wire buffer

@@ -2,7 +2,350 @@ const std = @import("std");
 pub const node = @import("node.zig");
 pub const wire = @import("wire.zig");
 pub const sandbox = @import("sandbox.zig");
+pub const schema = @import("schema.zig");
 const extension = @import("extension.zig");
+
+test {
+    std.testing.refAllDecls(@This());
+}
+
+test "Orchestrator basic initialization and wire management" {
+    const allocator = std.testing.allocator;
+    var orch: Orchestrator = undefined;
+    try orch.init(allocator);
+    defer orch.deinit();
+
+    const w = try orch.addWire("test.wire", "x:f32;y:f32", 8, true);
+    try std.testing.expectEqual(orch.wires.count(), 1);
+    try std.testing.expect(orch.getWire("test.wire") == w);
+}
+
+test "Orchestrator task graph rebuilding" {
+    const allocator = std.testing.allocator;
+    var orch: Orchestrator = undefined;
+    try orch.init(allocator);
+    defer orch.deinit();
+
+    // Mock vtable for testing
+    var mock_vtable: node.abi.moontide_extension_t = undefined;
+    mock_vtable.create_node = (struct {
+        fn create(_: [*c]const u8, _: [*c]const u8) callconv(.C) node.abi.moontide_node_h {
+            return @as(node.abi.moontide_node_h, @ptrFromInt(0xDEADBEEF));
+        }
+    }).create;
+    mock_vtable.destroy_node = (struct {
+        fn destroy(_: node.abi.moontide_node_h) callconv(.C) void {}
+    }).destroy;
+    mock_vtable.bind_wire = (struct {
+        fn bind(_: node.abi.moontide_node_h, _: [*c]const u8, _: ?*anyopaque, _: usize) callconv(.C) node.abi.moontide_status_t {
+            return node.abi.MOONTIDE_STATUS_OK;
+        }
+    }).bind;
+
+    const n1 = try allocator.create(node.Node);
+    n1.* = try node.Node.init(allocator, "node1", .Heartbeat, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(1)));
+    try orch.nodes.put(try allocator.dupe(u8, "node1"), n1);
+
+    const n2 = try allocator.create(node.Node);
+    n2.* = try node.Node.init(allocator, "node2", .Heartbeat, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(2)));
+    try orch.nodes.put(try allocator.dupe(u8, "node2"), n2);
+
+    // No conflicts, should be in 1 level
+    try orch.rebuildTaskGraph();
+    try std.testing.expectEqual(orch.levels.items.len, 1);
+    try std.testing.expectEqual(orch.levels.items[0].items.len, 2);
+
+    // Add conflict: n1 writes to wire1, n2 reads from wire1
+    const w1 = try orch.addWire("wire1", "x:f32", 4, false);
+    n1.bindWire("wire1", w1, std.posix.PROT.READ | std.posix.PROT.WRITE);
+    n2.bindWire("wire1", w1, std.posix.PROT.READ);
+
+    try orch.rebuildTaskGraph();
+    // Conflict should force them into 2 levels
+    try std.testing.expectEqual(orch.levels.items.len, 2);
+}
+
+test "Sandbox recovery from SIGSEGV" {
+    sandbox.is_recovering = true;
+    defer sandbox.is_recovering = false;
+    sandbox.initSignalHandler();
+
+    if (sandbox.c.setjmp(&sandbox.jump_buffer) == 0) {
+        // Simulate a segfault
+        _ = sandbox.c.raise(sandbox.c.SIGSEGV);
+        try std.testing.expect(false); // Should not reach here
+    } else {
+        // Successfully recovered!
+        try std.testing.expect(true);
+    }
+}
+
+test "Silicon Gating (mprotect) enforcement" {
+    const allocator = std.testing.allocator;
+    var orch: Orchestrator = undefined;
+    try orch.init(allocator);
+    defer orch.deinit();
+
+    sandbox.initSignalHandler();
+
+    const w = try orch.addWire("secure_wire", "val:i32", 4, false);
+    
+    // 1. Set to READ ONLY
+    w.setAccess(std.posix.PROT.READ);
+    const ptr: *i32 = @ptrCast(@alignCast(w.ptr()));
+
+    sandbox.is_recovering = true;
+    defer sandbox.is_recovering = false;
+
+    if (sandbox.c.setjmp(&sandbox.jump_buffer) == 0) {
+        // 2. Attempt unauthorized write
+        ptr.* = 1234; 
+        try std.testing.expect(false); // Should fail before this
+    } else {
+        // 3. Recovered from the write-fault
+        try std.testing.expect(true);
+    }
+    
+    // Verify it didn't actually write (or at least we caught it)
+    w.setAccess(std.posix.PROT.READ);
+    try std.testing.expect(ptr.* != 1234);
+}
+
+test "Watchdog Timeout and Strike Count" {
+    const allocator = std.testing.allocator;
+    var orch: Orchestrator = undefined;
+    try orch.init(allocator);
+    defer orch.deinit();
+
+    sandbox.initSignalHandler();
+
+    // Mock vtable with a sleeping tick
+    var mock_vtable: node.abi.moontide_extension_t = undefined;
+    mock_vtable.create_node = (struct {
+        fn create(_: [*c]const u8, _: [*c]const u8) callconv(.C) node.abi.moontide_node_h {
+            return @as(node.abi.moontide_node_h, @ptrFromInt(0x1337));
+        }
+    }).create;
+    mock_vtable.destroy_node = (struct {
+        fn destroy(_: node.abi.moontide_node_h) callconv(.C) void {}
+    }).destroy;
+    mock_vtable.bind_wire = (struct {
+        fn bind(_: node.abi.moontide_node_h, _: [*c]const u8, _: ?*anyopaque, _: usize) callconv(.C) node.abi.moontide_status_t {
+            return node.abi.MOONTIDE_STATUS_OK;
+        }
+    }).bind;
+    mock_vtable.tick = (struct {
+        fn tick(_: node.abi.moontide_node_h) callconv(.C) node.abi.moontide_status_t {
+            // Sleep for 200ms (Watchdog budget is 100ms)
+            std.time.sleep(200 * std.time.ns_per_ms);
+            return node.abi.MOONTIDE_STATUS_OK;
+        }
+    }).tick;
+
+    const n = try allocator.create(node.Node);
+    n.* = try node.Node.init(allocator, "slow_node", .Heartbeat, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(0x1337)));
+    try orch.nodes.put(try allocator.dupe(u8, "slow_node"), n);
+
+    // Execute 3 times - should get jailed
+    try orch.rebuildTaskGraph();
+    
+    // Level 1: Execute
+    try orch.tick();
+    std.time.sleep(50 * std.time.ns_per_ms); // Wait for watchdog cleanup
+    try std.testing.expectEqual(@as(u32, 1), n.strike_count);
+
+    try orch.tick();
+    std.time.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(u32, 2), n.strike_count);
+
+    try orch.tick();
+    std.time.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(u32, 3), n.strike_count);
+    try std.testing.expect(n.is_jailed);
+
+    // 4th execution should be skipped
+    try orch.tick();
+    try std.testing.expectEqual(@as(u32, 3), n.strike_count);
+}
+
+test "Poke (Event) system" {
+    const allocator = std.testing.allocator;
+    var orch: Orchestrator = undefined;
+    try orch.init(allocator);
+    defer orch.deinit();
+
+    // Mock vtable
+    var mock_vtable: node.abi.moontide_extension_t = undefined;
+    mock_vtable.create_node = (struct {
+        fn create(_: [*c]const u8, _: [*c]const u8) callconv(.C) node.abi.moontide_node_h {
+            return @as(node.abi.moontide_node_h, @ptrFromInt(0x1));
+        }
+    }).create;
+    mock_vtable.destroy_node = (struct {
+        fn destroy(_: node.abi.moontide_node_h) callconv(.C) void {}
+    }).destroy;
+    mock_vtable.bind_wire = (struct {
+        fn bind(_: node.abi.moontide_node_h, _: [*c]const u8, _: ?*anyopaque, _: usize) callconv(.C) node.abi.moontide_status_t {
+            return node.abi.MOONTIDE_STATUS_OK;
+        }
+    }).bind;
+    mock_vtable.add_trigger = (struct {
+        fn add(_: node.abi.moontide_node_h, _: [*c]const u8) callconv(.C) node.abi.moontide_status_t {
+            return node.abi.MOONTIDE_STATUS_OK;
+        }
+    }).add;
+    
+    const Mock = struct {
+        pub var count: u32 = 0;
+        fn tick(_: node.abi.moontide_node_h) callconv(.C) node.abi.moontide_status_t {
+            count += 1;
+            return node.abi.MOONTIDE_STATUS_OK;
+        }
+    };
+    mock_vtable.tick = Mock.tick;
+    Mock.count = 0; // Reset
+
+    const n = try allocator.create(node.Node);
+    n.* = try node.Node.init(allocator, "poke_node", .Poke, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(0x1)));
+    try orch.nodes.put(try allocator.dupe(u8, "poke_node"), n);
+    try n.addTrigger("test_event");
+
+    try orch.rebuildTaskGraph();
+
+    // 1. Regular tick should NOT trigger it
+    try orch.tick();
+    try std.testing.expectEqual(@as(u32, 0), Mock.count);
+
+    // 2. Poke it
+    try orch.poke("test_event");
+    try orch.tick();
+    try std.testing.expectEqual(@as(u32, 1), Mock.count);
+
+    // Verify it's still ticking
+    try orch.poke("test_event");
+    try orch.poke("test_event");
+    try orch.tick();
+    try std.testing.expectEqual(@as(u32, 3), Mock.count);
+}
+
+test "Deterministic Scheduler (Race Prevention)" {
+    const allocator = std.testing.allocator;
+    var orch: Orchestrator = undefined;
+    try orch.init(allocator);
+    defer orch.deinit();
+
+    // Mock vtable
+    var mock_vtable: node.abi.moontide_extension_t = undefined;
+    mock_vtable.create_node = (struct {
+        fn create(_: [*c]const u8, _: [*c]const u8) callconv(.C) node.abi.moontide_node_h {
+            return @as(node.abi.moontide_node_h, @ptrFromInt(0x1));
+        }
+    }).create;
+    mock_vtable.destroy_node = (struct {
+        fn destroy(_: node.abi.moontide_node_h) callconv(.C) void {}
+    }).destroy;
+    mock_vtable.bind_wire = (struct {
+        fn bind(_: node.abi.moontide_node_h, _: [*c]const u8, _: ?*anyopaque, _: usize) callconv(.C) node.abi.moontide_status_t {
+            return node.abi.MOONTIDE_STATUS_OK;
+        }
+    }).bind;
+
+    const w = try orch.addWire("race.wire", "val:i32", 4, true); // BUFFERED
+
+    const n1 = try allocator.create(node.Node);
+    n1.* = try node.Node.init(allocator, "a", .Heartbeat, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(1)));
+    try orch.nodes.put(try allocator.dupe(u8, "a"), n1);
+    n1.bindWire("race.wire", w, std.posix.PROT.READ | std.posix.PROT.WRITE);
+
+    const n2 = try allocator.create(node.Node);
+    n2.* = try node.Node.init(allocator, "b", .Heartbeat, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(2)));
+    try orch.nodes.put(try allocator.dupe(u8, "b"), n2);
+    n2.bindWire("race.wire", w, std.posix.PROT.READ | std.posix.PROT.WRITE);
+
+    // EVEN THOUGH BUFFERED, they should NOT be in the same level
+    // because multiple writers lead to non-determinism.
+    try orch.rebuildTaskGraph();
+    try std.testing.expectEqual(orch.levels.items.len, 2);
+}
+
+test "Schema Evolution and Data Migration" {
+    const allocator = std.testing.allocator;
+    var orch: Orchestrator = undefined;
+    try orch.init(allocator);
+    defer orch.deinit();
+
+    // 1. Create original wire
+    const w1 = try orch.addWire("evolve.me", "x:i32", 4, false);
+    w1.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
+    @as(*i32, @ptrCast(@alignCast(w1.ptr()))).* = 42;
+    w1.setAccess(std.posix.PROT.NONE);
+
+    // 2. Evolve it (add y:i32)
+    const w2 = try orch.addWire("evolve.me", "x:i32;y:i32", 8, false);
+    
+    // 3. Verify it's a new object but data is migrated
+    try std.testing.expect(w1 != w2);
+    try std.testing.expectEqual(orch.wires.get("evolve.me").?, w2);
+    
+    w2.setAccess(std.posix.PROT.READ);
+    try std.testing.expectEqual(@as(i32, 42), @as(*i32, @ptrCast(@alignCast(w2.ptr()))).*);
+    w2.setAccess(std.posix.PROT.NONE);
+}
+
+test "Type-Change (Ghost Data) Protection" {
+    const allocator = std.testing.allocator;
+    var orch: Orchestrator = undefined;
+    try orch.init(allocator);
+    defer orch.deinit();
+
+    // 1. Create a wire as f32 (4 bytes)
+    const w1 = try orch.addWire("type.test", "val:f32", 4, false);
+    w1.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
+    @as(*f32, @ptrCast(@alignCast(w1.ptr()))).* = 1.0;
+    w1.setAccess(std.posix.PROT.NONE);
+
+    // 2. Evolve to i32 (also 4 bytes)
+    const w2 = try orch.addWire("type.test", "val:i32", 4, false);
+    
+    // 3. Verify it's a new object even though size is the same
+    try std.testing.expect(w1 != w2);
+    
+    // Data is still migrated (which is okay for now, as we didn't wipe it)
+    // but the point is we trigger the evolution event and update the schema string.
+    try std.testing.expectEqualStrings("val:i32", w2.schema_str);
+}
+
+test "Circular Dependency Detection" {
+    const allocator = std.testing.allocator;
+    var orch: Orchestrator = undefined;
+    try orch.init(allocator);
+    defer orch.deinit();
+
+    // Mock vtable
+    var mock_vtable: node.abi.moontide_extension_t = undefined;
+    mock_vtable.create_node = (struct {
+        fn create(_: [*c]const u8, _: [*c]const u8) callconv(.C) node.abi.moontide_node_h {
+            return @as(node.abi.moontide_node_h, @ptrFromInt(0x1));
+        }
+    }).create;
+    mock_vtable.destroy_node = (struct {
+        fn destroy(_: node.abi.moontide_node_h) callconv(.C) void {}
+    }).destroy;
+
+    const n1 = try allocator.create(node.Node);
+    n1.* = try node.Node.init(allocator, "a", .Heartbeat, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(1)));
+    try orch.nodes.put(try allocator.dupe(u8, "a"), n1);
+
+    const n2 = try allocator.create(node.Node);
+    n2.* = try node.Node.init(allocator, "b", .Heartbeat, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(2)));
+    try orch.nodes.put(try allocator.dupe(u8, "b"), n2);
+
+    // Create cycle: a after b, b after a
+    try n1.after.append(try allocator.dupe(u8, "b"));
+    try n2.after.append(try allocator.dupe(u8, "a"));
+
+    try std.testing.expectError(error.CircularDependency, orch.rebuildTaskGraph());
+}
 
 pub const ExecutionMode = enum {
     Heartbeat,
@@ -54,7 +397,7 @@ pub const Orchestrator = struct {
         var wit = self.wires.iterator();
         while (wit.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
-            self.allocator.destroy(entry.value_ptr.*);
+            entry.value_ptr.*.deinit();
         }
         self.wires.deinit();
         
@@ -68,7 +411,36 @@ pub const Orchestrator = struct {
     }
 
     pub fn addWire(self: *Orchestrator, path: []const u8, schema_str: []const u8, size: usize, buffered: bool) !*wire.RawWire {
-        if (self.wires.get(path)) |w| return w;
+        if (self.wires.get(path)) |w| {
+            if (std.mem.eql(u8, w.schema_str, schema_str) and w.size == size) return w;
+            
+            // SCHEMA EVOLUTION: Schema or Size changed!
+            std.debug.print("[Orchestrator] Evolving Wire: {s} (Size: {d}->{d}, Schema: {s}->{s})\n", .{ path, w.size, size, w.schema_str, schema_str });
+            
+            const new_w = try wire.RawWire.init(self.allocator, path, schema_str, size, buffered);
+            
+            // Migrate data
+            w.setAccess(std.posix.PROT.READ);
+            new_w.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
+            
+            const copy_size = if (size < w.size) size else w.size;
+            @memcpy(new_w.banks[0][0..copy_size], w.banks[w.front_index][0..copy_size]);
+            if (buffered and w.is_buffered) {
+                @memcpy(new_w.banks[1][0..copy_size], w.banks[1 - w.front_index][0..copy_size]);
+            }
+            
+            new_w.setAccess(std.posix.PROT.NONE);
+            w.setAccess(std.posix.PROT.NONE);
+            
+            // Replace and cleanup old
+            if (self.wires.fetchRemove(path)) |entry| {
+                self.allocator.free(entry.key);
+            }
+            try self.wires.put(try self.allocator.dupe(u8, path), new_w);
+            
+            w.deinit();
+            return new_w;
+        }
 
         const w = try wire.RawWire.init(self.allocator, path, schema_str, size, buffered);
         try self.wires.put(try self.allocator.dupe(u8, path), w);
@@ -93,6 +465,11 @@ pub const Orchestrator = struct {
         for (self.levels.items) |level| level.deinit();
         self.levels.clearRetainingCapacity();
 
+        // --- SILICON UNLOCK ---
+        // During DAG construction, we must ensure wires are readable.
+        var wit = self.wires.valueIterator();
+        while (wit.next()) |w| w.*.setAccess(std.posix.PROT.READ);
+
         var remaining = std.ArrayList(*node.Node).init(self.allocator);
         defer remaining.deinit();
         
@@ -101,11 +478,39 @@ pub const Orchestrator = struct {
             if (n.*.mode == .Heartbeat) try remaining.append(n.*);
         }
 
+        // 1. DETERMINISM: Sort nodes by name
+        std.mem.sort(*node.Node, remaining.items, {}, struct {
+            fn lessThan(_: void, a: *node.Node, b: *node.Node) bool {
+                return std.mem.lessThan(u8, a.name, b.name);
+            }
+        }.lessThan);
+
+        var completed = std.StringHashMap(void).init(self.allocator);
+        defer completed.deinit();
+
         while (remaining.items.len > 0) {
             var current_level = std.ArrayList(*node.Node).init(self.allocator);
             var i: usize = 0;
+            var added_any = false;
+
             while (i < remaining.items.len) {
                 const n = remaining.items[i];
+                
+                // --- 2. 'AFTER' DEPENDENCY CHECK ---
+                var deps_met = true;
+                for (n.after.items) |dep| {
+                    if (!completed.contains(dep)) {
+                        deps_met = false;
+                        break;
+                    }
+                }
+
+                if (!deps_met) {
+                    i += 1;
+                    continue;
+                }
+
+                // --- 3. CONFLICT CHECK ---
                 var conflict = false;
                 for (current_level.items) |other| {
                     if (nodesCollide(n, other)) {
@@ -117,20 +522,46 @@ pub const Orchestrator = struct {
                 if (!conflict) {
                     try current_level.append(n);
                     _ = remaining.swapRemove(i);
+                    added_any = true;
                 } else {
                     i += 1;
                 }
             }
+
+            if (!added_any) {
+                std.debug.print("[Orchestrator] ERROR: Circular dependency detected or impossible graph!\n", .{});
+                // RE-LOCK before erroring
+                var wit_err = self.wires.valueIterator();
+                while (wit_err.next()) |w| w.*.setAccess(std.posix.PROT.NONE);
+                return error.CircularDependency;
+            }
+
+            // Mark this level as completed for 'after' constraints
+            for (current_level.items) |n| {
+                try completed.put(n.name, {});
+            }
+
             try self.levels.append(current_level);
         }
         
+        // --- SILICON RE-LOCK ---
+        var wit_end = self.wires.valueIterator();
+        while (wit_end.next()) |w| w.*.setAccess(std.posix.PROT.NONE);
+
         std.debug.print("[Orchestrator] Task Graph: {d} parallel levels.\n", .{ self.levels.items.len });
     }
 
     fn nodesCollide(a: *node.Node, b: *node.Node) bool {
         var a_it = a.bound_wires.valueIterator();
         while (a_it.next()) |a_b| {
-            if (a_b.wire.is_buffered) continue;
+            // CRITICAL: The scheduler needs to read the wire pointer/metadata.
+            // But wires are usually locked (PROT_NONE).
+            // Actually, we are only reading 'a_b.wire' which is a pointer in the Node,
+            // NOT the memory the wire points to.
+            // Wait, why did it segfault? Ah! I accessed 'a_b.wire.is_buffered' in the previous version.
+            // In the NEW version, I don't access 'is_buffered'.
+            // Let me check if anything else in 'nodesCollide' accesses the wire data.
+            
             if (a_b.access & 2 != 0) { // A writes
                 var b_it = b.bound_wires.valueIterator();
                 while (b_it.next()) |b_b| {

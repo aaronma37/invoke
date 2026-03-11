@@ -4,7 +4,7 @@ const orchestrator = @import("orchestrator.zig");
 
 // Import the stable ABI
 pub const abi = @cImport({
-    @cInclude("invoke_abi.h");
+    @cInclude("moontide.h");
 });
 
 pub const WireBinding = struct {
@@ -21,11 +21,12 @@ pub const Node = struct {
     allocator: std.mem.Allocator,
     
     // The Opaque Handshake
-    handle: abi.invoke_node_h,
-    vtable: abi.invoke_extension_t,
+    handle: abi.moontide_node_h,
+    vtable: abi.moontide_extension_t,
     
     // Metadata
     triggers: std.ArrayList([]const u8),
+    after: std.ArrayList([]const u8),
     bound_wires: std.StringHashMap(WireBinding),
     last_mtime: i128 = 0,
     
@@ -43,8 +44,8 @@ pub const Node = struct {
         name: []const u8, 
         mode: orchestrator.ExecutionMode, 
         script_path: []const u8,
-        vtable: abi.invoke_extension_t,
-        handle: abi.invoke_node_h
+        vtable: abi.moontide_extension_t,
+        handle: abi.moontide_node_h
     ) !Node {
         return Node{
             .name = try allocator.dupe(u8, name),
@@ -54,6 +55,7 @@ pub const Node = struct {
             .vtable = vtable,
             .handle = handle,
             .triggers = std.ArrayList([]const u8).init(allocator),
+            .after = std.ArrayList([]const u8).init(allocator),
             .bound_wires = std.StringHashMap(WireBinding).init(allocator),
         };
     }
@@ -73,6 +75,11 @@ pub const Node = struct {
             self.allocator.free(t);
         }
         self.triggers.deinit();
+
+        for (self.after.items) |t| {
+            self.allocator.free(t);
+        }
+        self.after.deinit();
     }
 
     pub fn addTrigger(self: *Node, event: []const u8) !void {
@@ -90,6 +97,7 @@ pub const Node = struct {
         
         // Track binding for Silicon Gating (mprotect)
         if (self.bound_wires.getPtr(wire_name)) |existing| {
+            existing.wire = w;
             existing.access |= access;
         } else {
             self.bound_wires.put(self.allocator.dupe(u8, wire_name) catch return, .{

@@ -1,4 +1,4 @@
-# Invoke Changelog
+# Moontide Changelog
 
 ## [v0.7.0] - Indestructible Isolation (PLANNING)
 *“The Watchdog and the Jail: Total Fault Tolerance.”*
@@ -6,7 +6,7 @@
 ### 🚀 Planned Architectural Shifts
 1.  **Execution Watchdog:** Forcible interruption of infinite loops/deadlocks.
 2.  **Strike System (Jailing):** Automatically disabling nodes that crash repeatedly until hot-swapped.
-3.  **Forensic Crash Logs:** CPU register and context dumping via `invoke.log`.
+3.  **Forensic Crash Logs:** CPU register and context dumping via `moontide.log`.
 
 ---
 
@@ -14,7 +14,7 @@
 *“Cross-Namespace Messaging and Thread-Safe Triggers.”*
 
 ### 🚀 Major Architectural Shifts
-1.  **Cross-Namespace Poke (`invoke.poke`):** Implemented a global, tag-based event bus. Nodes can now trigger reactions in other namespaces without memory dependencies.
+1.  **Cross-Namespace Poke (`moontide.poke`):** Implemented a global, tag-based event bus. Nodes can now trigger reactions in other namespaces without memory dependencies.
 2.  **Thread-Safe Event Queue:** Developed a Mutex-protected queue in the Orchestrator to handle simultaneous "pokes" from parallel worker threads.
 3.  **Atomic ABI Evolution:** Extended the Silicon ABI to include host-side event registration.
 
@@ -42,12 +42,12 @@
 #### 2. Schema Evolution & Migration
 *   **Eternal Data:** Changing a wire's schema mid-execution now triggers an automatic data migration. The kernel maps old fields to new offsets by name, ensuring state survives architectural shifts.
 
-#### 3. Global Engine Logging (`invoke.log`)
+#### 3. Global Engine Logging (`moontide.log`)
 *   **Universal Telemetry:** Implemented a host-side logging callback in the ABI. Both Lua and WASM nodes can now send structured, severity-leveled messages back to the Kernel.
 *   **Context Enrichment:** Logs are automatically prefixed with the Node's full path for precise debugging.
 
 #### 4. WASM Guest SDK
-*   **Invoke SDK:** Created a lightweight Zig SDK for WASM nodes, abstracting away manual offset management and providing clean logging/wiring interfaces.
+*   **Moontide SDK:** Created a lightweight Zig SDK for WASM nodes, abstracting away manual offset management and providing clean logging/wiring interfaces.
 *   **Performance:** Optimized the WASM extension to cache function exports, reducing frame overhead to near-zero.
 
 ---

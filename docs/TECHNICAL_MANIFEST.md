@@ -1,12 +1,12 @@
-# The Invoke Technical Manifest
+# The Moontide Technical Manifest
 
-**Invoke** is a high-performance runtime separating "Silicon" (Zig host) from "Software" (AI-logic).
+**Moontide** is a high-performance runtime separating "Silicon" (Zig host) from "Software" (AI-logic).
 
 ## 1. The Motherboard (Zig Kernel)
 A static, high-performance binary (< 2MB) providing the "Universal Silicon" platform.
 *   **Pure Silicon:** Zero dependencies on `lua.h`.
 *   **Silicon Gating:** Ruthlessly enforces hardware-level memory protection (`mprotect`) on Wires.
-*   **The Socket (invoke_abi.h):** A permanent C-ABI contract for all extensions.
+*   **The Socket (moontide_abi.h):** A permanent C-ABI contract for all extensions.
 *   **Chameleon Scheduler:** A dependency-aware DAG executor that can toggle between Deterministic (Double-Buffered) and Dynamic (Single-Buffered) execution.
 
 ## 2. Eternal Data (Wires)
@@ -18,7 +18,7 @@ State lives on raw, page-aligned memory buffers that persist across logic reload
 ## 3. Ephemeral Logic (Nodes)
 Application behavior is isolated into "pluggable" sockets.
 *   **Indestructible Heartbeat:** Robust signal recovery ensures the Motherboard survives crashes in user logic.
-*   **Universal SDK:** Standardized logging (`invoke.log`) and services provided by the host via the ABI.
+*   **Universal SDK:** Standardized logging (`moontide.log`) and services provided by the host via the ABI.
 
 ## 4. The Handshake (ABI Protocol)
 Extensions must implement the following C-interface:
@@ -28,11 +28,11 @@ Extensions must implement the following C-interface:
 *   `set_log_handler(fn)`: Receive the host's telemetry callback.
 
 ## 4. Data Layout Freedom (SOA vs AOS)
-Invoke is **Layout-Agnostic**. The Kernel provides raw memory; the AI defines the orientation.
+Moontide is **Layout-Agnostic**. The Kernel provides raw memory; the AI defines the orientation.
 
 *   **AOS (Array of Structures):** Perfect for "Brain" nodes. The AI defines a complex wire (e.g., `stats: {x, y, hp}`). This is easy for logic but slower for the CPU cache.
 *   **SOA (Structure of Arrays):** Perfect for "Muscle" nodes (SIMD). The AI defines separate wires (e.g., `pos_x`, `pos_y`, `health`). This keeps the CPU cache hot and enables zero-copy vectorized processing.
-*   **The Switch:** Refactoring from AOS to SOA—which takes weeks in a traditional engine—is a 10-second change to the `topology.json` in Invoke.
+*   **The Switch:** Refactoring from AOS to SOA—which takes weeks in a traditional engine—is a 10-second change to the `topology.json` in Moontide.
 
 ## 5. Universal Development
 | Aspect | Mechanism |

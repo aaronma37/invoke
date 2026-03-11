@@ -4,13 +4,13 @@ const sandbox = core.sandbox;
 
 const c = @cImport({
     @cInclude("wasmtime.h");
-    @cInclude("invoke_abi.h");
+    @cInclude("moontide.h");
 });
 
 const abi = c;
 
-var global_log_handler: ?abi.invoke_log_fn = null;
-var global_poke_handler: ?abi.invoke_poke_fn = null;
+var global_log_handler: ?abi.moontide_log_fn = null;
+var global_poke_handler: ?abi.moontide_poke_fn = null;
 
 const WasmNode = struct {
     engine: ?*c.wasm_engine_t,
@@ -74,7 +74,7 @@ const WasmNode = struct {
         const linker = c.wasmtime_linker_new(self.engine);
         defer c.wasmtime_linker_delete(linker);
 
-        // 1. invoke_log
+        // 1. moontide_log
         var params_log: [3]*c.wasm_valtype_t = undefined;
         params_log[0] = c.wasm_valtype_new(c.WASM_I32).?;
         params_log[1] = c.wasm_valtype_new(c.WASM_I32).?;
@@ -84,17 +84,17 @@ const WasmNode = struct {
         var result_vec_empty: c.wasm_valtype_vec_t = undefined;
         c.wasm_valtype_vec_new_empty(&result_vec_empty);
         const functype_log = c.wasm_functype_new(&param_vec_log, &result_vec_empty);
-        _ = c.wasmtime_linker_define_func(linker, "env", 3, "invoke_log", 10, functype_log, @ptrCast(&wasm_log_callback), self, null);
+        _ = c.wasmtime_linker_define_func(linker, "env", 3, "moontide_log", 10, functype_log, @ptrCast(&wasm_log_callback), self, null);
         c.wasm_functype_delete(functype_log);
 
-        // 2. invoke_poke
+        // 2. moontide_poke
         var params_poke: [2]*c.wasm_valtype_t = undefined;
         params_poke[0] = c.wasm_valtype_new(c.WASM_I32).?;
         params_poke[1] = c.wasm_valtype_new(c.WASM_I32).?;
         var param_vec_poke: c.wasm_valtype_vec_t = undefined;
         c.wasm_valtype_vec_new(&param_vec_poke, 2, @ptrCast(&params_poke));
         const functype_poke = c.wasm_functype_new(&param_vec_poke, &result_vec_empty);
-        _ = c.wasmtime_linker_define_func(linker, "env", 3, "invoke_poke", 11, functype_poke, @ptrCast(&wasm_poke_callback), self, null);
+        _ = c.wasmtime_linker_define_func(linker, "env", 3, "moontide_poke", 11, functype_poke, @ptrCast(&wasm_poke_callback), self, null);
         c.wasm_functype_delete(functype_poke);
 
         var trap: ?*c.wasm_trap_t = null;
@@ -157,7 +157,7 @@ fn wasm_log_callback(
     _ = results; _ = nresults; _ = nargs;
     sandbox.checkPoints();
     const self: *WasmNode = @ptrCast(@alignCast(env.?));
-    const level: abi.invoke_log_level_t = @intCast(args[0].of.i32);
+    const level: abi.moontide_log_level_t = @intCast(args[0].of.i32);
     const ptr: usize = @intCast(args[1].of.i32);
     const len: usize = @intCast(args[2].of.i32);
 
@@ -210,27 +210,27 @@ fn wasm_poke_callback(
 
 // --- ABI IMPLEMENTATION ---
 
-export fn set_log_handler(handler: abi.invoke_log_fn) void {
+export fn set_log_handler(handler: abi.moontide_log_fn) void {
     global_log_handler = handler;
 }
 
-export fn set_poke_handler(handler: abi.invoke_poke_fn) void {
+export fn set_poke_handler(handler: abi.moontide_poke_fn) void {
     global_poke_handler = handler;
 }
 
 export fn set_orchestrator_handler(orch: ?*anyopaque) void { _ = orch; }
 
-export fn create_node(name: [*c]const u8, script_path: [*c]const u8) abi.invoke_node_h {
+export fn create_node(name: [*c]const u8, script_path: [*c]const u8) abi.moontide_node_h {
     const node = WasmNode.init(std.heap.c_allocator, name, script_path) catch return null;
     return @ptrCast(node);
 }
 
-export fn destroy_node(handle: abi.invoke_node_h) void {
+export fn destroy_node(handle: abi.moontide_node_h) void {
     const node: *WasmNode = @ptrCast(@alignCast(handle));
     node.deinit();
 }
 
-export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopaque, access: usize) abi.invoke_status_t {
+export fn bind_wire(handle: abi.moontide_node_h, name: [*c]const u8, ptr: ?*anyopaque, access: usize) abi.moontide_status_t {
     sandbox.checkPoints();
     const node: *WasmNode = @ptrCast(@alignCast(handle));
     const wire_name = std.mem.span(name);
@@ -241,7 +241,7 @@ export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopa
         if (std.mem.eql(u8, b.name, wire_name)) {
             b.host_ptr = host_ptr_bytes;
             b.is_output = b.is_output or is_output;
-            return c.INVOKE_STATUS_OK;
+            return c.MOONTIDE_STATUS_OK;
         }
     }
 
@@ -253,17 +253,17 @@ export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopa
     const size: usize = if (std.mem.indexOf(u8, wire_name, "stats") != null) 12 else 8;
 
     node.bindings.append(.{
-        .name = node.allocator.dupe(u8, wire_name) catch return c.INVOKE_STATUS_ERROR,
+        .name = node.allocator.dupe(u8, wire_name) catch return c.MOONTIDE_STATUS_ERROR,
         .host_ptr = host_ptr_bytes,
         .guest_offset = current_offset,
         .size = size,
         .is_output = is_output,
-    }) catch return c.INVOKE_STATUS_ERROR;
+    }) catch return c.MOONTIDE_STATUS_ERROR;
 
-    return c.INVOKE_STATUS_OK;
+    return c.MOONTIDE_STATUS_OK;
 }
 
-export fn tick(handle: abi.invoke_node_h) abi.invoke_status_t {
+export fn tick(handle: abi.moontide_node_h) abi.moontide_status_t {
     const node: *WasmNode = @ptrCast(@alignCast(handle));
     const ctx = node.context;
 
@@ -280,7 +280,7 @@ export fn tick(handle: abi.invoke_node_h) abi.invoke_status_t {
             const err = c.wasmtime_func_call(ctx, &f, null, 0, null, 0, &trap);
             if (err != null or trap != null) {
                 std.debug.print("[WASM Ext Error] Tick failed (err: {?}, trap: {?})\n", .{ err, trap });
-                return c.INVOKE_STATUS_ERROR;
+                return c.MOONTIDE_STATUS_ERROR;
             }
         }
 
@@ -291,22 +291,22 @@ export fn tick(handle: abi.invoke_node_h) abi.invoke_status_t {
         }
     }
 
-    return c.INVOKE_STATUS_OK;
+    return c.MOONTIDE_STATUS_OK;
 }
 
-export fn reload_node(handle: abi.invoke_node_h, script_path: [*c]const u8) abi.invoke_status_t {
+export fn reload_node(handle: abi.moontide_node_h, script_path: [*c]const u8) abi.moontide_status_t {
     _ = handle;
     _ = script_path;
-    return c.INVOKE_STATUS_OK;
+    return c.MOONTIDE_STATUS_OK;
 }
 
-export fn add_trigger(handle: abi.invoke_node_h, event_name: [*c]const u8) abi.invoke_status_t {
+export fn add_trigger(handle: abi.moontide_node_h, event_name: [*c]const u8) abi.moontide_status_t {
     _ = handle;
     _ = event_name;
-    return c.INVOKE_STATUS_OK;
+    return c.MOONTIDE_STATUS_OK;
 }
 
-export fn invoke_ext_init() abi.invoke_extension_t {
+export fn moontide_ext_init() abi.moontide_extension_t {
     return .{
         .create_node = create_node,
         .destroy_node = destroy_node,

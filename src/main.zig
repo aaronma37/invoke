@@ -31,9 +31,19 @@ pub fn main() !void {
         try cmdRun(allocator, topo_path);
     } else if (std.mem.eql(u8, command, "init")) {
         try cmdInit();
+    } else if (std.mem.eql(u8, command, "sdk")) {
+        if (args.len < 3) {
+            printUsage();
+            return;
+        }
+        if (std.mem.eql(u8, args[2], "install")) {
+            try cmdSdkInstall(allocator);
+        } else {
+            printUsage();
+        }
     } else if (std.mem.eql(u8, command, "version")) {
-        std.debug.print("Invoke Kernel v0.5.0 (Lua-Config Edition)\n", .{});
-        std.debug.print("Silicon ABI v{d}\n", .{node.abi.INVOKE_ABI_VERSION});
+        std.debug.print("Moontide Kernel v0.5.0 (Lua-Config Edition)\n", .{});
+        std.debug.print("Silicon ABI v{d}\n", .{node.abi.MOONTIDE_ABI_VERSION});
     } else {
         printUsage();
     }
@@ -41,18 +51,19 @@ pub fn main() !void {
 
 fn printUsage() void {
     std.debug.print(
-        \\Invoke: The AI-Native Runtime Engine
+        \\Moontide: The AI-Native Runtime Engine
         \\
         \\Usage:
-        \\  invoke run [topology.lua]   Boot the pure silicon kernel
-        \\  invoke init                Scaffold a new Invoke project
-        \\  invoke version             Display version info
+        \\  moontide run [topology.lua]   Boot the pure silicon kernel
+        \\  moontide init                Scaffold a new Moontide project
+        \\  moontide sdk install         Install SDK headers and runtimes globally
+        \\  moontide version             Display version info
         \\
     , .{});
 }
 
 fn cmdInit() !void {
-    std.debug.print("[CLI] Scaffolding new Invoke project...\n", .{});
+    std.debug.print("[CLI] Scaffolding new Moontide project...\n", .{});
     
     try std.fs.cwd().makePath("ext");
     try std.fs.cwd().makePath("gen");
@@ -72,8 +83,69 @@ fn cmdInit() !void {
     std.debug.print("[CLI] Created topology.lua, ext/, and gen/.\n", .{});
 }
 
+fn cmdSdkInstall(allocator: std.mem.Allocator) !void {
+    std.debug.print("[CLI] Installing Moontide SDK globally...\n", .{});
+
+    // 1. Install Header
+    const header_src = "sdk/moontide.h";
+    const header_dst = "/usr/local/include/moontide.h";
+    
+    std.fs.cwd().access(header_src, .{}) catch {
+        std.debug.print("[Error] Could not find {s}. Are you in the root of the Moontide repo?\n", .{header_src});
+        return error.HeaderNotFound;
+    };
+
+    std.debug.print("  -> Copying header to {s}...\n", .{header_dst});
+    const header_data = try std.fs.cwd().readFileAlloc(allocator, header_src, 1024 * 1024);
+    defer allocator.free(header_data);
+
+    std.fs.cwd().writeFile(.{ .sub_path = header_dst, .data = header_data }) catch |err| {
+        if (err == error.AccessDenied) {
+            std.debug.print("[Error] Permission denied. Please run with sudo: sudo ./zig-out/bin/moontide sdk install\n", .{});
+        } else {
+            std.debug.print("[Error] Failed to install header: {any}\n", .{err});
+        }
+        return err;
+    };
+
+    // 2. Install Runtimes (Extensions)
+    const lib_dir_dst = "/usr/local/lib/moontide/ext/";
+    std.debug.print("  -> Preparing runtime directory {s}...\n", .{lib_dir_dst});
+    
+    std.fs.cwd().makePath(lib_dir_dst) catch |err| {
+        if (err == error.AccessDenied) {
+            std.debug.print("[Error] Permission denied creating lib directory.\n", .{});
+            return err;
+        }
+    };
+
+    var ext_dir = std.fs.cwd().openDir("ext", .{ .iterate = true }) catch {
+        std.debug.print("[Warning] No 'ext/' directory found. Skipping runtime installation. Run 'zig build' first.\n", .{});
+        return;
+    };
+    defer ext_dir.close();
+
+    var it = ext_dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".so")) {
+            std.debug.print("  -> Installing runtime: {s}\n", .{entry.name});
+            const lib_data = try ext_dir.readFileAlloc(allocator, entry.name, 50 * 1024 * 1024);
+            defer allocator.free(lib_data);
+            
+            const full_dst = try std.fs.path.join(allocator, &.{ lib_dir_dst, entry.name });
+            defer allocator.free(full_dst);
+            
+            try std.fs.cwd().writeFile(.{ .sub_path = full_dst, .data = lib_data });
+        }
+    }
+
+    std.debug.print("[CLI] SDK Installation Complete!\n", .{});
+    std.debug.print("      Headers: {s}\n", .{header_dst});
+    std.debug.print("      Runtimes: {s}\n", .{lib_dir_dst});
+}
+
 fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
-    std.debug.print("Initializing Invoke Kernel (Lua-Config Mode)...\n", .{});
+    std.debug.print("Initializing Moontide Kernel (Lua-Config Mode)...\n", .{});
 
     // Register Signal Handler
     sandbox.initSignalHandler();
@@ -171,7 +243,7 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
     // Phase 1: Wires & Header Synthesis
     var c_headers = std.ArrayList(u8).init(allocator);
     defer c_headers.deinit();
-    try c_headers.appendSlice("#ifndef INVOKE_WIRES_H\n#define INVOKE_WIRES_H\n\n#include <stdint.h>\n#include <stdbool.h>\n\n");
+    try c_headers.appendSlice("#ifndef MOONTIDE_WIRES_H\n#define MOONTIDE_WIRES_H\n\n#include <stdint.h>\n#include <stdbool.h>\n\n");
 
     var lua_headers = std.ArrayList(u8).init(allocator);
     defer lua_headers.deinit();
@@ -305,6 +377,21 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
                         l.lua_pushinteger(L, @intCast(ti));
                         l.lua_gettable(L, -2);
                         try n.addTrigger(std.mem.span(l.lua_tolstring(L, -1, null)));
+                        l.lua_pop(L, 1);
+                    }
+                }
+                l.lua_pop(L, 1);
+
+                l.lua_getfield(L, -1, "after");
+                if (l.lua_type(L, -1) == l.LUA_TTABLE) {
+                    const a_count = l.lua_objlen(L, -1);
+                    for (1..a_count + 1) |ai| {
+                        l.lua_pushinteger(L, @intCast(ai));
+                        l.lua_gettable(L, -2);
+                        const dep_name = std.mem.span(l.lua_tolstring(L, -1, null));
+                        const full_dep = if (std.mem.indexOf(u8, dep_name, ".") != null) try allocator.dupe(u8, dep_name) else try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_name, dep_name });
+                        defer allocator.free(full_dep);
+                        try n.after.append(try allocator.dupe(u8, full_dep));
                         l.lua_pop(L, 1);
                     }
                 }

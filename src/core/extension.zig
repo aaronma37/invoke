@@ -6,14 +6,14 @@ const orchestrator = @import("orchestrator.zig");
 
 pub var current_orch: ?*orchestrator.Orchestrator = null;
 
-fn kernelLog(level: node.abi.invoke_log_level_t, node_name: [*c]const u8, message: [*c]const u8) callconv(.C) void {
+fn kernelLog(level: node.abi.moontide_log_level_t, node_name: [*c]const u8, message: [*c]const u8) callconv(.C) void {
     sandbox.checkPoints();
     const level_str = switch (level) {
-        node.abi.INVOKE_LOG_DEBUG => "DEBUG",
-        node.abi.INVOKE_LOG_INFO => "INFO ",
-        node.abi.INVOKE_LOG_WARN => "WARN ",
-        node.abi.INVOKE_LOG_ERROR => "ERROR",
-        node.abi.INVOKE_LOG_FATAL => "FATAL",
+        node.abi.MOONTIDE_LOG_DEBUG => "DEBUG",
+        node.abi.MOONTIDE_LOG_INFO => "INFO ",
+        node.abi.MOONTIDE_LOG_WARN => "WARN ",
+        node.abi.MOONTIDE_LOG_ERROR => "ERROR",
+        node.abi.MOONTIDE_LOG_FATAL => "FATAL",
         else => "?????",
     };
     
@@ -30,7 +30,7 @@ fn kernelPoke(event_name: [*c]const u8) callconv(.C) void {
 
 pub const Extension = struct {
     lib: std.DynLib,
-    vtable: node.abi.invoke_extension_t,
+    vtable: node.abi.moontide_extension_t,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8) !*Extension {
@@ -41,7 +41,7 @@ pub const Extension = struct {
         self.lib = try std.DynLib.open(path);
         
         // 2. Look up the entry point
-        const init_fn = self.lib.lookup(node.abi.invoke_ext_init_fn, "invoke_ext_init") 
+        const init_fn = self.lib.lookup(node.abi.moontide_ext_init_fn, "moontide_ext_init") 
             orelse return error.ExtensionInitSymbolNotFound;
             
         // 3. Get the VTable (The Handshake)
@@ -92,14 +92,50 @@ pub const ExtensionManager = struct {
     pub fn getOrLoad(self: *ExtensionManager, ext_type: []const u8) !*Extension {
         if (self.extensions.get(ext_type)) |ext| return ext;
 
-        // Path convention: ext/lib<type>_ext.so
-        const path = try std.fmt.allocPrint(self.allocator, "ext/lib{s}_ext.so", .{ext_type});
-        defer self.allocator.free(path);
+        const lib_name = try std.fmt.allocPrint(self.allocator, "lib{s}_ext.so", .{ext_type});
+        defer self.allocator.free(lib_name);
 
-        const ext = try Extension.init(self.allocator, path);
-        try self.extensions.put(try self.allocator.dupe(u8, ext_type), ext);
-        
-        std.debug.print("[ExtensionManager] Loaded Runtime: {s}\n", .{ext_type});
-        return ext;
+        // --- LOOKUP ORDER ---
+        // 1. Local ./ext/
+        // 2. User Global ~/.local/lib/moontide/ext/
+        // 3. System Global /usr/local/lib/moontide/ext/
+
+        const paths = [_][]const u8{
+            "./ext/",
+            "/usr/local/lib/moontide/ext/",
+        };
+
+        for (paths) |base_path| {
+            const full_path = try std.fs.path.join(self.allocator, &.{ base_path, lib_name });
+            defer self.allocator.free(full_path);
+
+            if (Extension.init(self.allocator, full_path)) |ext| {
+                try self.extensions.put(try self.allocator.dupe(u8, ext_type), ext);
+                std.debug.print("[ExtensionManager] Loaded Runtime: {s} (from {s})\n", .{ ext_type, base_path });
+                return ext;
+            } else |_| {
+                continue;
+            }
+        }
+
+        // Try User Global if HOME is set
+        const home_env = std.process.getEnvVarOwned(self.allocator, "HOME") catch null;
+        if (home_env) |home| {
+            defer self.allocator.free(home);
+            const user_path = try std.fs.path.join(self.allocator, &.{ home, ".local/lib/moontide/ext/" });
+            defer self.allocator.free(user_path);
+            
+            const full_path = try std.fs.path.join(self.allocator, &.{ user_path, lib_name });
+            defer self.allocator.free(full_path);
+
+            if (Extension.init(self.allocator, full_path)) |ext| {
+                try self.extensions.put(try self.allocator.dupe(u8, ext_type), ext);
+                std.debug.print("[ExtensionManager] Loaded Runtime: {s} (from user global)\n", .{ ext_type });
+                return ext;
+            } else |_| {}
+        }
+
+        std.debug.print("[ExtensionManager] ERROR: Could not find runtime '{s}' in any standard path.\n", .{ext_type});
+        return error.ExtensionNotFound;
     }
 };

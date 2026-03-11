@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
 
     // 1. THE KERNEL (Pure Silicon)
     const exe = b.addExecutable(.{
-        .name = "invoke",
+        .name = "moontide",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -93,4 +93,28 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_cmd.addArgs(args);
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
+
+    // 6. TESTS
+    const unit_tests = b.addTest(.{
+        .root_source_file = b.path("src/core/orchestrator.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    unit_tests.linkLibC();
+    unit_tests.addIncludePath(b.path("sdk"));
+    unit_tests.addIncludePath(b.path("src/core"));
+
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_unit_tests.step);
+
+    // 7. INTEGRATION TESTS (Bash)
+    const integration_test = b.addSystemCommand(&.{ "bash", "tests/run_integration.sh" });
+    integration_test.step.dependOn(b.getInstallStep()); // Need the binary built
+    const integration_step = b.step("test-integration", "Run integration tests");
+    integration_step.dependOn(&integration_test.step);
+
+    const test_all_step = b.step("test-all", "Run ALL tests (Unit + Integration)");
+    test_all_step.dependOn(test_step);
+    test_all_step.dependOn(integration_step);
 }

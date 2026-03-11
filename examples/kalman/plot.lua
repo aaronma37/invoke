@@ -48,7 +48,7 @@ function tick()
     local fil = ffi.cast("FilteredSignal*", wire_filtered_signal)
 
     if not initialized then
-        rl.InitWindow(width, height, "Invoke: Kalman Filter Signal Analysis")
+        rl.InitWindow(width, height, "Moontide: Kalman Filter Signal Analysis")
         rl.SetTargetFPS(60)
         initialized = true
     end

@@ -13,6 +13,6 @@ function tick()
     wind.direction = 1.0
     
     if math.abs(wind.force) > 1.8 then
-        invoke.log("Extreme wind conditions detected!")
+        moontide.log("Extreme wind conditions detected!")
     end
 end

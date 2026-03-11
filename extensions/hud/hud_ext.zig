@@ -3,7 +3,7 @@ const core = @import("core");
 const sandbox = core.sandbox;
 
 const abi = @cImport({
-    @cInclude("invoke_abi.h");
+    @cInclude("moontide.h");
 });
 const orchestrator = core;
 const node_pkg = core.node;
@@ -30,7 +30,7 @@ const HudNode = struct {
         };
 
         // Initialize Raylib
-        rl.InitWindow(800, 600, "Invoke Motherboard Visualizer");
+        rl.InitWindow(800, 600, "Moontide Motherboard Visualizer");
         rl.SetTargetFPS(60);
         
         return self;
@@ -115,7 +115,7 @@ const HudNode = struct {
         rl.EndMode2D();
 
         rl.DrawFPS(10, 10);
-        rl.DrawText("Invoke v0.7.0 | Deterministic Parallelism ACTIVE", 10, 580, 10, rl.DARKGRAY);
+        rl.DrawText("Moontide v0.7.0 | Deterministic Parallelism ACTIVE", 10, 580, 10, rl.DARKGRAY);
     }
 
     fn getNodePos(self: *HudNode, orch: *orchestrator.Orchestrator, n: *node_pkg.Node) rl.Vector2 {
@@ -145,7 +145,7 @@ const HudNode = struct {
 
 // --- ABI IMPLEMENTATION ---
 
-export fn poll_events(handle: abi.invoke_node_h) bool {
+export fn poll_events(handle: abi.moontide_node_h) bool {
     const node = @as(*HudNode, @ptrCast(@alignCast(handle)));
     return node.pollEvents();
 }
@@ -154,43 +154,43 @@ export fn set_orchestrator_handler(orch: ?*anyopaque) void {
     global_orch = @ptrCast(@alignCast(orch));
 }
 
-export fn create_node(name: [*c]const u8, script_path: [*c]const u8) abi.invoke_node_h {
+export fn create_node(name: [*c]const u8, script_path: [*c]const u8) abi.moontide_node_h {
     _ = name; _ = script_path;
     const node = HudNode.init(std.heap.c_allocator) catch return null;
     return @ptrCast(node);
 }
 
-export fn destroy_node(handle: abi.invoke_node_h) void {
+export fn destroy_node(handle: abi.moontide_node_h) void {
     const node: *HudNode = @ptrCast(@alignCast(handle));
     node.deinit();
 }
 
-export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopaque, access: usize) abi.invoke_status_t {
+export fn bind_wire(handle: abi.moontide_node_h, name: [*c]const u8, ptr: ?*anyopaque, access: usize) abi.moontide_status_t {
     _ = handle; _ = name; _ = ptr; _ = access;
     sandbox.checkPoints();
-    return abi.INVOKE_STATUS_OK;
+    return abi.MOONTIDE_STATUS_OK;
 }
 
-export fn tick(handle: abi.invoke_node_h) abi.invoke_status_t {
+export fn tick(handle: abi.moontide_node_h) abi.moontide_status_t {
     const node: *HudNode = @ptrCast(@alignCast(handle));
     node.draw();
-    return abi.INVOKE_STATUS_OK;
+    return abi.MOONTIDE_STATUS_OK;
 }
 
-export fn reload_node(handle: abi.invoke_node_h, script_path: [*c]const u8) abi.invoke_status_t {
+export fn reload_node(handle: abi.moontide_node_h, script_path: [*c]const u8) abi.moontide_status_t {
     _ = handle; _ = script_path;
-    return abi.INVOKE_STATUS_OK;
+    return abi.MOONTIDE_STATUS_OK;
 }
 
-export fn add_trigger(handle: abi.invoke_node_h, event_name: [*c]const u8) abi.invoke_status_t {
+export fn add_trigger(handle: abi.moontide_node_h, event_name: [*c]const u8) abi.moontide_status_t {
     _ = handle; _ = event_name;
-    return abi.INVOKE_STATUS_OK;
+    return abi.MOONTIDE_STATUS_OK;
 }
 
-export fn set_log_handler(handler: abi.invoke_log_fn) void { _ = handler; }
-export fn set_poke_handler(handler: abi.invoke_poke_fn) void { _ = handler; }
+export fn set_log_handler(handler: abi.moontide_log_fn) void { _ = handler; }
+export fn set_poke_handler(handler: abi.moontide_poke_fn) void { _ = handler; }
 
-export fn invoke_ext_init() abi.invoke_extension_t {
+export fn moontide_ext_init() abi.moontide_extension_t {
     return .{
         .create_node = create_node,
         .destroy_node = destroy_node,

@@ -1,4 +1,4 @@
-const invoke = @import("invoke.zig");
+const moontide = @import("moontide.zig");
 
 // We'll use a fixed size for the example
 const MAX_BOIDS = 1000;
@@ -15,7 +15,7 @@ pub const SwarmWire = extern struct {
 const OFFSET_SWARM = 0x0;
 
 export fn tick() void {
-    const swarm = invoke.getWire(SwarmWire, OFFSET_SWARM);
+    const swarm = moontide.getWire(SwarmWire, OFFSET_SWARM);
     
     const visual_range: f32 = 40.0;
     const min_distance: f32 = 10.0;
