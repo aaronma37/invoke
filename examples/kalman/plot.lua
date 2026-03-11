@@ -48,7 +48,6 @@ function tick()
     local fil = ffi.cast("FilteredSignal*", wire_filtered_signal)
 
     if not initialized then
-        print("[Plotter] Initializing Raylib window...")
         rl.InitWindow(width, height, "Invoke: Kalman Filter Signal Analysis")
         rl.SetTargetFPS(60)
         initialized = true
@@ -66,10 +65,6 @@ function tick()
         filtered = fil.value
     })
     if #history > max_history then table.remove(history, 1) end
-
-    if #history % 100 == 0 then
-        print("[Plotter] History size: " .. #history .. " | Latest Measured: " .. raw.measured)
-    end
 
     rl.BeginDrawing()
     rl.ClearBackground(colors.bg)

@@ -93,8 +93,8 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
         // --- 0. OS EVENT POLLING ---
         var node_it = orch.nodes.valueIterator();
         while (node_it.next()) |n| {
-            if (n.vtable.poll_events) |poll| {
-                if (!poll(n.handle)) return; // Exit if window closed
+            if (n.*.vtable.poll_events) |poll| {
+                if (!poll(n.*.handle)) return; // Exit if window closed
             }
         }
         

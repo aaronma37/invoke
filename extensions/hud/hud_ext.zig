@@ -64,13 +64,15 @@ const HudNode = struct {
 
             // 1. Draw Wires (Connections)
             var node_it = orch.nodes.valueIterator();
-            while (node_it.next()) |n| {
+            while (node_it.next()) |n_ptr| {
+                const n = n_ptr.*;
                 var w_it = n.bound_wires.valueIterator();
                 while (w_it.next()) |binding| {
                     const w = binding.wire;
                     const start_pos = self.getNodePos(orch, n);
                     var other_node_it = orch.nodes.valueIterator();
-                    while (other_node_it.next()) |other| {
+                    while (other_node_it.next()) |other_ptr| {
+                        const other = other_ptr.*;
                         if (n == other) continue;
                         if (other.bound_wires.get(w.name)) |_| {
                             const end_pos = self.getNodePos(orch, other);
