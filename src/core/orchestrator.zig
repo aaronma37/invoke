@@ -1,15 +1,8 @@
 const std = @import("std");
 pub const node = @import("node.zig");
 pub const wire = @import("wire.zig");
+pub const sandbox = @import("sandbox.zig");
 const extension = @import("extension.zig");
-
-// Signal recovery imports for the worker threads
-const c_signal = @cImport({
-    @cInclude("setjmp.h");
-});
-
-threadlocal var jump_buffer: c_signal.jmp_buf = undefined;
-threadlocal var is_recovering: bool = false;
 
 pub const ExecutionMode = enum {
     Heartbeat,
@@ -21,6 +14,7 @@ pub const Orchestrator = struct {
     allocator: std.mem.Allocator,
     wires: std.StringHashMap(*wire.RawWire),
     nodes: std.StringHashMap(node.Node),
+    nodes_mutex: std.Thread.Mutex = .{},
     ext_manager: extension.ExtensionManager,
     pokes: std.ArrayList([]const u8),
     pokes_mutex: std.Thread.Mutex = .{},
@@ -28,8 +22,9 @@ pub const Orchestrator = struct {
     // THE TASK GRAPH
     levels: std.ArrayList(std.ArrayList(*node.Node)),
     
-    // THE ASSEMBLY LINE (Thread Pool)
-    thread_pool: std.Thread.Pool,
+    // WATCHDOG
+    watchdog_thread: ?std.Thread = null,
+    watchdog_active: bool = true,
 
     pub fn init(self: *Orchestrator, allocator: std.mem.Allocator) !void {
         self.* = .{
@@ -39,15 +34,16 @@ pub const Orchestrator = struct {
             .ext_manager = extension.ExtensionManager.init(allocator),
             .pokes = std.ArrayList([]const u8).init(allocator),
             .levels = std.ArrayList(std.ArrayList(*node.Node)).init(allocator),
-            .thread_pool = undefined,
         };
         
-        try self.thread_pool.init(.{ .allocator = allocator });
+        // Start Watchdog
+        self.watchdog_thread = try std.Thread.spawn(.{}, watchdogLoop, .{self});
     }
 
     pub fn deinit(self: *Orchestrator) void {
-        self.thread_pool.deinit();
-        
+        self.watchdog_active = false;
+        if (self.watchdog_thread) |t| t.join();
+
         var wire_it = self.wires.iterator();
         while (wire_it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
@@ -80,6 +76,9 @@ pub const Orchestrator = struct {
         const handle = ext.vtable.create_node.?(path_z.ptr, script_z.ptr) orelse return error.NodeCreationFailed;
         
         const n = try node.Node.init(self.allocator, path, mode, script_path, ext.vtable, handle);
+        
+        self.nodes_mutex.lock();
+        defer self.nodes_mutex.unlock();
         try self.nodes.put(try self.allocator.dupe(u8, path), n);
         return self.nodes.getPtr(path).?;
     }
@@ -162,6 +161,10 @@ pub const Orchestrator = struct {
 
     pub fn rebuildTaskGraph(self: *Orchestrator) !void {
         self.clearLevels();
+        
+        self.nodes_mutex.lock();
+        defer self.nodes_mutex.unlock();
+
         var remaining_nodes = std.ArrayList(*node.Node).init(self.allocator);
         defer remaining_nodes.deinit();
         var it = self.nodes.valueIterator();
@@ -213,15 +216,28 @@ pub const Orchestrator = struct {
     }
 
     pub fn tick(self: *Orchestrator) !void {
+        // HEARTBEAT NODES
         for (self.levels.items) |level| {
-            var wg = std.Thread.WaitGroup{};
+            var threads = try std.ArrayList(std.Thread).initCapacity(self.allocator, level.items.len);
+            defer threads.deinit();
+
             for (level.items) |n| {
-                wg.start();
-                try self.thread_pool.spawn(parallelWorker, .{ self, n, &wg });
+                if (std.mem.eql(u8, n.name, "debug.visualizer")) continue;
+                try threads.append(try std.Thread.spawn(.{}, parallelWorker, .{ self, n }));
             }
-            self.thread_pool.waitAndWork(&wg);
+
+            // Run Main-Thread nodes LOCALLY while workers are busy
+            for (level.items) |n| {
+                if (std.mem.eql(u8, n.name, "debug.visualizer")) {
+                    try self.executeNode(n);
+                }
+            }
+
+            // BARRIER: Wait for level to complete
+            for (threads.items) |t| t.join();
         }
 
+        // POKE NODES
         while (true) {
             self.pokes_mutex.lock();
             if (self.pokes.items.len == 0) {
@@ -243,21 +259,58 @@ pub const Orchestrator = struct {
         }
     }
 
-    fn parallelWorker(self: *Orchestrator, n: *node.Node, wg: *std.Thread.WaitGroup) void {
-        defer wg.finish();
-        is_recovering = true;
-        if (c_signal.setjmp(&jump_buffer) == 0) {
+    fn parallelWorker(self: *Orchestrator, n: *node.Node) void {
+        if (n.is_jailed) return;
+
+        // TRACK START
+        n.running_thread.store(std.Thread.getCurrentId(), .monotonic);
+        n.start_time.store(std.time.milliTimestamp(), .monotonic);
+        n.is_running.store(true, .release);
+
+        sandbox.is_recovering = true;
+        const code = sandbox.c.setjmp(&sandbox.jump_buffer);
+        if (code == 0) {
             self.executeNode(n) catch |err| {
                 std.debug.print("[Parallel] Node {s} failed: {any}\n", .{ n.name, err });
             };
         } else {
-            std.debug.print("[Parallel] RECOVERY: Node {s} crashed.\n", .{ n.name });
+            // CRITICAL: DO NOT ALLOCATE OR FREE HERE.
+            n.strike_count += 1;
+            if (n.strike_count >= 3) n.is_jailed = true;
+            std.debug.print("[Parallel] RECOVERY for {s}.\n", .{ n.name });
         }
-        is_recovering = false;
+        
+        // TRACK END
+        n.is_running.store(false, .release);
+        sandbox.is_recovering = false;
+    }
+
+    fn watchdogLoop(self: *Orchestrator) void {
+        const timeout_ms: i64 = 100; // 100ms budget
+
+        while (self.watchdog_active) {
+            std.time.sleep(20 * std.time.ns_per_ms);
+            
+            self.nodes_mutex.lock();
+            var it = self.nodes.valueIterator();
+            while (it.next()) |n| {
+                if (n.is_running.load(.acquire)) {
+                    const elapsed = std.time.milliTimestamp() - n.start_time.load(.monotonic);
+                    if (elapsed > timeout_ms) {
+                        const thread_id = n.running_thread.load(.monotonic);
+                        std.debug.print("[Watchdog] Node {s} EXCEEDED budget ({d}ms). Terminating thread {d}...\n", .{ n.name, elapsed, thread_id });
+                        _ = std.os.linux.tkill(@intCast(thread_id), std.posix.SIG.USR1);
+                    }
+                }
+            }
+            self.nodes_mutex.unlock();
+        }
     }
 
     fn executeNode(self: *Orchestrator, n: *node.Node) !void {
         _ = self;
+        if (n.is_jailed) return;
+
         var it = n.bound_wires.iterator();
         while (it.next()) |entry| {
             const binding = entry.value_ptr;

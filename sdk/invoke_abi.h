@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 /**
  * INVOKE ABI v1.1
@@ -60,6 +61,9 @@ typedef struct {
     void (*set_log_handler)(invoke_log_fn log_handler);
     void (*set_poke_handler)(invoke_poke_fn poke_handler);
     void (*set_orchestrator_handler)(void* orch);
+
+    // 6. OS Integration
+    bool (*poll_events)(invoke_node_h node);
 } invoke_extension_t;
 
 /**

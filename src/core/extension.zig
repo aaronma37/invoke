@@ -1,11 +1,13 @@
 const std = @import("std");
 const node = @import("node.zig");
+const sandbox = @import("sandbox.zig");
 
 const orchestrator = @import("orchestrator.zig");
 
 pub var current_orch: ?*orchestrator.Orchestrator = null;
 
 fn kernelLog(level: node.abi.invoke_log_level_t, node_name: [*c]const u8, message: [*c]const u8) callconv(.C) void {
+    sandbox.checkPoints();
     const level_str = switch (level) {
         node.abi.INVOKE_LOG_DEBUG => "DEBUG",
         node.abi.INVOKE_LOG_INFO => "INFO ",
@@ -20,6 +22,7 @@ fn kernelLog(level: node.abi.invoke_log_level_t, node_name: [*c]const u8, messag
 }
 
 fn kernelPoke(event_name: [*c]const u8) callconv(.C) void {
+    sandbox.checkPoints();
     if (current_orch) |orch| {
         orch.poke(std.mem.span(event_name)) catch {};
     }

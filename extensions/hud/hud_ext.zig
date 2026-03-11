@@ -1,8 +1,10 @@
 const std = @import("std");
+const core = @import("core");
+const sandbox = core.sandbox;
+
 const abi = @cImport({
     @cInclude("invoke_abi.h");
 });
-const core = @import("core");
 const orchestrator = core;
 const node_pkg = core.node;
 const wire_pkg = core.wire;
@@ -40,9 +42,7 @@ const HudNode = struct {
     }
 
     pub fn draw(self: *HudNode) void {
-        if (rl.WindowShouldClose()) return;
-
-        // Interaction
+        // Interaction (Only if window is alive)
         if (rl.IsMouseButtonDown(rl.MOUSE_BUTTON_RIGHT)) {
             const delta = rl.GetMouseDelta();
             self.camera.target.x -= delta.x / self.camera.zoom;
@@ -63,7 +63,23 @@ const HudNode = struct {
             const node_spacing: f32 = 100.0;
 
             // 1. Draw Wires (Connections)
-            // For now, we'll just draw the nodes and their levels.
+            var node_it = orch.nodes.valueIterator();
+            while (node_it.next()) |n| {
+                var w_it = n.bound_wires.valueIterator();
+                while (w_it.next()) |binding| {
+                    const w = binding.wire;
+                    const start_pos = self.getNodePos(orch, n);
+                    var other_node_it = orch.nodes.valueIterator();
+                    while (other_node_it.next()) |other| {
+                        if (n == other) continue;
+                        if (other.bound_wires.get(w.name)) |_| {
+                            const end_pos = self.getNodePos(orch, other);
+                            const color = if (binding.access & 2 != 0) rl.ORANGE else rl.DARKBLUE;
+                            rl.DrawLineBezier(start_pos, end_pos, 2.0, color);
+                        }
+                    }
+                }
+            }
             
             // 2. Draw Nodes
             for (orch.levels.items, 0..) |level, l_idx| {
@@ -72,17 +88,22 @@ const HudNode = struct {
 
                 for (level.items, 0..) |n, n_idx| {
                     const y = start_y + @as(f32, @floatFromInt(n_idx)) * node_spacing;
+                    const color = if (n.is_jailed) rl.RED else rl.SKYBLUE;
+                    const fill = if (n.is_jailed) rl.MAROON else rl.DARKGRAY;
+
+                    rl.DrawCircleV(.{ .x = x, .y = y }, 30, fill);
+                    rl.DrawCircleLinesV(.{ .x = x, .y = y }, 30, color);
                     
-                    // Draw node circle
-                    rl.DrawCircleV(.{ .x = x, .y = y }, 30, rl.DARKGRAY);
-                    rl.DrawCircleLinesV(.{ .x = x, .y = y }, 30, rl.SKYBLUE);
-                    
-                    // Draw name
                     const name_c = @as([*c]const u8, @ptrCast(n.name.ptr));
                     rl.DrawText(name_c, @intFromFloat(x - 40), @intFromFloat(y + 40), 10, rl.RAYWHITE);
                     
-                    // Draw "Last Tick" status (glow if executing)
-                    // (Requires adding a 'last_tick_time' to node struct)
+                    if (n.is_jailed) {
+                        rl.DrawText("JAILED", @intFromFloat(x - 20), @intFromFloat(y - 5), 10, rl.RED);
+                    } else if (n.strike_count > 0) {
+                        var strike_buf: [16]u8 = undefined;
+                        const strike_text = std.fmt.bufPrintZ(&strike_buf, "STRIKES: {d}", .{n.strike_count}) catch "ERR";
+                        rl.DrawText(strike_text.ptr, @intFromFloat(x - 30), @intFromFloat(y - 5), 10, rl.ORANGE);
+                    }
                 }
             }
         } else {
@@ -91,13 +112,41 @@ const HudNode = struct {
 
         rl.EndMode2D();
 
-        // Overlay
         rl.DrawFPS(10, 10);
-        rl.DrawText("Invoke v0.6.0 | Deterministic Parallelism ACTIVE", 10, 580, 10, rl.DARKGRAY);
+        rl.DrawText("Invoke v0.7.0 | Deterministic Parallelism ACTIVE", 10, 580, 10, rl.DARKGRAY);
+    }
+
+    fn getNodePos(self: *HudNode, orch: *orchestrator.Orchestrator, n: *node_pkg.Node) rl.Vector2 {
+        _ = self;
+        const level_spacing: f32 = 300.0;
+        const node_spacing: f32 = 100.0;
+
+        for (orch.levels.items, 0..) |level, l_idx| {
+            const x = @as(f32, @floatFromInt(l_idx)) * level_spacing;
+            const start_y = -@as(f32, @floatFromInt(level.items.len)) * node_spacing / 2.0;
+            for (level.items, 0..) |ln, n_idx| {
+                if (ln == n) {
+                    const y = start_y + @as(f32, @floatFromInt(n_idx)) * node_spacing;
+                    return .{ .x = x, .y = y };
+                }
+            }
+        }
+        return .{ .x = 0, .y = 0 };
+    }
+
+    pub fn pollEvents(self: *HudNode) bool {
+        _ = self;
+        rl.PollInputEvents();
+        return !rl.WindowShouldClose();
     }
 };
 
 // --- ABI IMPLEMENTATION ---
+
+export fn poll_events(handle: abi.invoke_node_h) bool {
+    const node = @as(*HudNode, @ptrCast(@alignCast(handle)));
+    return node.pollEvents();
+}
 
 export fn set_orchestrator_handler(orch: ?*anyopaque) void {
     global_orch = @ptrCast(@alignCast(orch));
@@ -116,6 +165,7 @@ export fn destroy_node(handle: abi.invoke_node_h) void {
 
 export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopaque, access: usize) abi.invoke_status_t {
     _ = handle; _ = name; _ = ptr; _ = access;
+    sandbox.checkPoints();
     return abi.INVOKE_STATUS_OK;
 }
 
@@ -149,5 +199,6 @@ export fn invoke_ext_init() abi.invoke_extension_t {
         .set_log_handler = set_log_handler,
         .set_poke_handler = set_poke_handler,
         .set_orchestrator_handler = set_orchestrator_handler,
+        .poll_events = poll_events,
     };
 }

@@ -1,4 +1,6 @@
 const std = @import("std");
+const core = @import("core");
+const sandbox = core.sandbox;
 
 const c = @cImport({
     @cInclude("wasmtime.h");
@@ -158,6 +160,7 @@ fn wasm_log_callback(
     nresults: usize
 ) callconv(.C) ?*c.wasm_trap_t {
     _ = results; _ = nresults; _ = nargs;
+    sandbox.checkPoints();
     const self: *WasmNode = @ptrCast(@alignCast(env.?));
     const level: abi.invoke_log_level_t = @intCast(args[0].of.i32);
     const ptr: usize = @intCast(args[1].of.i32);
@@ -187,6 +190,7 @@ fn wasm_poke_callback(
     nresults: usize
 ) callconv(.C) ?*c.wasm_trap_t {
     _ = results; _ = nresults; _ = nargs; _ = env;
+    sandbox.checkPoints();
     const ptr: usize = @intCast(args[0].of.i32);
     const len: usize = @intCast(args[1].of.i32);
 
@@ -219,6 +223,8 @@ export fn set_poke_handler(handler: abi.invoke_poke_fn) void {
     global_poke_handler = handler;
 }
 
+export fn set_orchestrator_handler(orch: ?*anyopaque) void { _ = orch; }
+
 export fn create_node(name: [*c]const u8, script_path: [*c]const u8) abi.invoke_node_h {
     const node = WasmNode.init(std.heap.c_allocator, name, script_path) catch return null;
     return @ptrCast(node);
@@ -230,6 +236,7 @@ export fn destroy_node(handle: abi.invoke_node_h) void {
 }
 
 export fn bind_wire(handle: abi.invoke_node_h, name: [*c]const u8, ptr: ?*anyopaque, access: usize) abi.invoke_status_t {
+    sandbox.checkPoints();
     const node: *WasmNode = @ptrCast(@alignCast(handle));
     const wire_name = std.mem.span(name);
     const host_ptr_bytes: [*]u8 = @ptrCast(ptr.?);
@@ -314,5 +321,6 @@ export fn invoke_ext_init() abi.invoke_extension_t {
         .add_trigger = add_trigger,
         .set_log_handler = set_log_handler,
         .set_poke_handler = set_poke_handler,
+        .set_orchestrator_handler = set_orchestrator_handler,
     };
 }

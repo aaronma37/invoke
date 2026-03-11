@@ -1,35 +1,48 @@
 const std = @import("std");
-const node = @import("node.zig");
 
-/// The Sandbox is responsible for managing the lifetime and memory access limits
-/// for every node in the runtime, ensuring no node takes too long or writes outside
-/// its allocated Wire.
-pub const Sandbox = struct {
-    allocator: std.mem.Allocator,
+pub const c = @cImport({
+    @cInclude("signal.h");
+    @cInclude("setjmp.h");
+});
 
-    pub fn init(allocator: std.mem.Allocator) Sandbox {
-        return .{
-            .allocator = allocator,
-        };
+pub threadlocal var jump_buffer: c.jmp_buf = undefined;
+pub threadlocal var is_recovering: bool = false;
+pub threadlocal var must_abort: bool = false;
+
+pub fn segfault_handler(sig: c_int) callconv(.C) void {
+    _ = sig;
+    if (is_recovering) {
+        c.longjmp(&jump_buffer, 1);
+    } else {
+        std.debug.print("\n[CRITICAL] Unrecoverable Segfault outside of Node execution.\n", .{});
+        std.process.exit(1);
     }
+}
 
-    pub fn deinit(self: *Sandbox) void {
-        _ = self;
+pub fn timeout_handler(sig: c_int) callconv(.C) void {
+    _ = sig;
+    if (is_recovering) {
+        c.longjmp(&jump_buffer, 2); // Force jump out of loop
     }
+}
 
-    pub fn validateExecutionTime(self: *Sandbox, n: *node.Node, execution_time_ns: u64, max_time_ns: u64) !void {
-        _ = self;
-        if (execution_time_ns > max_time_ns) {
-            std.debug.print("Sandbox Violation: Node {s} exceeded execution time! Terminating.\n", .{n.name});
-            return error.ExecutionTimeout;
-        }
+pub fn checkPoints() void {
+    if (must_abort) {
+        must_abort = false;
+        c.longjmp(&jump_buffer, 2); // 2 = Timeout code
     }
+}
 
-    pub fn validateMemoryAccess(self: *Sandbox, n: *node.Node, offset: usize, max_offset: usize) !void {
-        _ = self;
-        if (offset >= max_offset) {
-            std.debug.print("Sandbox Violation: Node {s} attempted out-of-bounds memory access! Terminating.\n", .{n.name});
-            return error.MemoryOutOfBounds;
-        }
-    }
-};
+pub fn initSignalHandler() void {
+    // 1. Segfault
+    var sa_segv: c.struct_sigaction = std.mem.zeroes(c.struct_sigaction);
+    sa_segv.__sigaction_handler.sa_handler = segfault_handler;
+    sa_segv.sa_flags = 0; 
+    _ = c.sigaction(c.SIGSEGV, &sa_segv, null);
+
+    // 2. Timeout (User Signal 1)
+    var sa_usr1: c.struct_sigaction = std.mem.zeroes(c.struct_sigaction);
+    sa_usr1.__sigaction_handler.sa_handler = timeout_handler;
+    sa_usr1.sa_flags = 0;
+    _ = c.sigaction(c.SIGUSR1, &sa_usr1, null);
+}

@@ -3,25 +3,7 @@ const orchestrator = @import("core/orchestrator.zig");
 const wire = @import("core/wire.zig");
 const node = @import("core/node.zig");
 const schema = @import("core/schema.zig");
-
-// --- SIGNAL RECOVERY SYSTEM ---
-const c = @cImport({
-    @cInclude("signal.h");
-    @cInclude("setjmp.h");
-});
-
-threadlocal var jump_buffer: c.jmp_buf = undefined;
-threadlocal var is_recovering: bool = false;
-
-fn segfault_handler(sig: c_int) callconv(.C) void {
-    _ = sig;
-    if (is_recovering) {
-        c.longjmp(&jump_buffer, 1);
-    } else {
-        std.debug.print("\n[CRITICAL] Unrecoverable Segfault outside of Node execution.\n", .{});
-        std.process.exit(1);
-    }
-}
+const sandbox = @import("core/sandbox.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -88,9 +70,7 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
     std.debug.print("Initializing Invoke Kernel (Indestructible Mode)...\n", .{});
 
     // Register Signal Handler
-    var sa: c.struct_sigaction = std.mem.zeroes(c.struct_sigaction);
-    sa.__sigaction_handler.sa_handler = segfault_handler;
-    _ = c.sigaction(c.SIGSEGV, &sa, null);
+    sandbox.initSignalHandler();
 
     var orch: orchestrator.Orchestrator = undefined;
     try orch.init(allocator);
@@ -103,7 +83,15 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
 
     while (true) {
         frame_count += 1;
-
+        
+        // --- 0. OS EVENT POLLING ---
+        var node_it = orch.nodes.valueIterator();
+        while (node_it.next()) |n| {
+            if (n.vtable.poll_events) |poll| {
+                if (!poll(n.handle)) return; // Exit if window closed
+            }
+        }
+        
         // 1. Hot-Reloading Check
         const topo_file = std.fs.cwd().openFile(topo_path, .{}) catch |err| {
             if (err == error.FileNotFound) {
@@ -118,20 +106,20 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
         if (stat.mtime > last_topology_mtime) {
             std.debug.print("\n[Kernel] Hot-swapping GRAPH TOPOLOGY...\n", .{});
             last_topology_mtime = stat.mtime;
-            is_recovering = false;
+            sandbox.is_recovering = false;
             try reloadTopology(allocator, &orch, topo_path);
         }
 
         if (frame_count % 10 == 0) try orch.poke("on_collision");
 
         // 2. RESILIENT HEARTBEAT
-        is_recovering = true;
-        if (c.setjmp(&jump_buffer) == 0) {
+        sandbox.is_recovering = true;
+        if (sandbox.c.setjmp(&sandbox.jump_buffer) == 0) {
             try orch.tick();
         } else {
             std.debug.print("\n[Kernel] RECOVERY (Frame {d}): A Node attempted a memory violation! Motherboard survives.\n", .{frame_count});
         }
-        is_recovering = false;
+        sandbox.is_recovering = false;
 
         orch.swapAllWires();
         
@@ -145,8 +133,6 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
             std.debug.print("[Monitor] Frame {d} | Player X: {d: >5.2} | HP: {d}\n", .{ frame_count, x, health });
             w.setAccess(std.posix.PROT.NONE);
         }
-
-        std.time.sleep(1 * std.time.ns_per_s);
     }
 }
 

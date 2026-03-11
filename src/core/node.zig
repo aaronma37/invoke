@@ -28,6 +28,15 @@ pub const Node = struct {
     triggers: std.ArrayList([]const u8),
     bound_wires: std.StringHashMap(WireBinding),
     last_mtime: i128 = 0,
+    
+    // FAULT TOLERANCE
+    strike_count: u32 = 0,
+    is_jailed: bool = false,
+    
+    // WATCHDOG
+    is_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    start_time: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
+    running_thread: std.atomic.Value(std.Thread.Id) = std.atomic.Value(std.Thread.Id).init(0),
 
     pub fn init(
         allocator: std.mem.Allocator, 
@@ -77,7 +86,7 @@ pub const Node = struct {
         const name_z = self.allocator.dupeZ(u8, wire_name) catch return;
         defer self.allocator.free(name_z);
         
-        _ = self.vtable.bind_wire.?(self.handle, name_z.ptr, w.ptr(), w.size);
+        _ = self.vtable.bind_wire.?(self.handle, name_z.ptr, w.ptr(), access);
         
         // Track binding for Silicon Gating (mprotect)
         if (self.bound_wires.getPtr(wire_name)) |existing| {
@@ -88,25 +97,32 @@ pub const Node = struct {
                 .access = access,
             }) catch return;
         }
-
-        std.debug.print("[Node {s}] Wire bound via ABI: {s} (Access: {X})\n", .{ self.name, wire_name, access });
     }
 
     pub fn execute(self: *Node) !void {
-        // 1. Hardware Watcher: Check if we need to hot-reload logic
-        const file = std.fs.cwd().openFile(self.script_path, .{}) catch |err| {
-            if (err == error.FileNotFound) return;
-            return err;
-        };
-        const stat = try file.stat();
-        file.close();
+        if (self.is_jailed) return;
 
-        if (stat.mtime > self.last_mtime) {
-            std.debug.print("[Node {s}] Hot-reloading script: {s}\n", .{ self.name, self.script_path });
-            self.last_mtime = stat.mtime;
-            const path_z = try self.allocator.dupeZ(u8, self.script_path);
-            defer self.allocator.free(path_z);
-            _ = self.vtable.reload_node.?(self.handle, path_z.ptr);
+        // 1. Hardware Watcher: Check if we need to hot-reload logic
+        if (!std.mem.eql(u8, self.script_path, "none")) {
+            const file = std.fs.cwd().openFile(self.script_path, .{}) catch |err| {
+                if (err == error.FileNotFound) return;
+                return err;
+            };
+            const stat = try file.stat();
+            file.close();
+
+            if (stat.mtime > self.last_mtime) {
+                std.debug.print("[Node {s}] Hot-reloading script: {s}\n", .{ self.name, self.script_path });
+                self.last_mtime = stat.mtime;
+                
+                // RESET FAULTS ON FIX
+                self.strike_count = 0;
+                self.is_jailed = false;
+
+                const path_z = try self.allocator.dupeZ(u8, self.script_path);
+                defer self.allocator.free(path_z);
+                _ = self.vtable.reload_node.?(self.handle, path_z.ptr);
+            }
         }
 
         // 2. Perform the Tick

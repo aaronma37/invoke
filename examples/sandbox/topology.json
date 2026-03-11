@@ -50,6 +50,18 @@
           "type": "hud",
           "mode": "Heartbeat",
           "script": "none"
+        },
+        {
+          "name": "bad_actor",
+          "type": "luajit",
+          "mode": "Heartbeat",
+          "script": "examples/sandbox/crash.lua"
+        },
+        {
+          "name": "stalled_actor",
+          "type": "luajit",
+          "mode": "Heartbeat",
+          "script": "examples/sandbox/stall.lua"
         }
       ]
     }
