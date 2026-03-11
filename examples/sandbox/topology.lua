@@ -1,0 +1,69 @@
+return {
+  namespaces = {
+    player = {
+      wires = {
+        stats = {
+          schema = "x:f32;y:f32;health:i32",
+          buffered = true
+        }
+      },
+      nodes = {
+        {
+          name = "physics",
+          type = "wasm",
+          mode = "Heartbeat",
+          script = "examples/sandbox/physics.wasm",
+          reads = {"stats", "environment.wind"},
+          writes = {"stats"}
+        },
+        {
+          name = "damage_system",
+          type = "luajit",
+          mode = "Poke",
+          triggers = {"on_collision"},
+          script = "examples/sandbox/damage.lua",
+          reads = {"stats"},
+          writes = {"stats"}
+        }
+      }
+    },
+    environment = {
+      wires = {
+        wind = "force:f32;direction:f32"
+      },
+      nodes = {
+        {
+          name = "wind_generator",
+          type = "luajit",
+          mode = "Heartbeat",
+          script = "examples/sandbox/wind.lua",
+          reads = {"player.stats"},
+          writes = {"wind"}
+        }
+      }
+    },
+    debug = {
+      wires = {},
+      nodes = {
+        {
+          name = "visualizer",
+          type = "hud",
+          mode = "Heartbeat",
+          script = "none"
+        },
+        {
+          name = "bad_actor",
+          type = "luajit",
+          mode = "Heartbeat",
+          script = "examples/sandbox/crash.lua"
+        },
+        {
+          name = "stalled_actor",
+          type = "luajit",
+          mode = "Heartbeat",
+          script = "examples/sandbox/stall.lua"
+        }
+      }
+    }
+  }
+}

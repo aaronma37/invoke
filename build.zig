@@ -19,8 +19,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exe.linkLibC();
+    exe.linkSystemLibrary("luajit-5.1");
     exe.addIncludePath(b.path("src/core"));
     exe.addIncludePath(b.path("sdk"));
+    exe.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
     b.installArtifact(exe);
 
     // 2. LUAJIT EXTENSION

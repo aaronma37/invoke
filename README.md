@@ -7,8 +7,8 @@ Invoke is a high-performance, **Data-Oriented DAG (Directed Acyclic Graph)** run
 ## 🚀 The Architecture
 Invoke splits your application into a static, indestructible **Kernel** and a dynamic, polyglot **Logic Layer**.
 
-*   **The Motherboard (Zig Host):** A tiny (< 2MB) kernel that manages raw memory and schedules execution. It provides the "Pure Silicon" infrastructure.
-*   **The Topology (JSON DAG):** Your application structure is defined in a hierarchical JSON file. The Architect AI defines the flow; the Kernel enforces the graph.
+*   **The Motherboard (Zig Host):** A tiny (< 2MB) kernel that manages raw memory and schedules execution. It is designed to be indestructible.
+*   **The Topology (Lua Blueprint):** Your application structure is defined in a **Lua script**. This allows for programmatic, procedurally generated graphs with the power of loops and conditionals. The Kernel enforces the resulting graph.
 *   **The Grapes (Polyglot Nodes):** Individual logic units written in the language best suited for the task: **LuaJIT** (for speed), **WASM** (for security), or **C/Zig** (for hardware).
 
 ## 🧠 Why Invoke? (The "Pro" Verdict)
@@ -17,6 +17,7 @@ Invoke splits your application into a static, indestructible **Kernel** and a dy
 Traditional codebases are toxic to AI. To fix one function, an LLM often needs the entire file's context. Invoke fixes this via **Context Isolation**:
 *   **Isolated Worker:** A "Worker" AI only needs to see the **Wire Schema** and the **Node Goal**. 
 *   **Context Window Optimization:** By reducing context from 10,000 lines to ~100 tokens of schema, AI success rates hit near 100% with massive cost savings.
+*   **Programmatic Blueprint:** By using Lua for topology, an AI can describe complex wiring patterns in 10 lines of code rather than 1,000 lines of JSON.
 
 ### 2. Data-Oriented Design (DOD)
 Invoke rejects the "Object" (State + Methods). Instead, it uses the **Eternal Data** model:
@@ -73,8 +74,8 @@ zig build
 # Compile the WASM worker
 zig build-exe examples/sandbox/physics.zig -target wasm32-freestanding -rdynamic -O ReleaseSmall -fno-entry -femit-bin=examples/sandbox/physics.wasm -I gen -I sdk
 
-# Run the Graph
-./zig-out/bin/invoke run examples/sandbox/topology.json
+# Run the Graph (using the Lua topology)
+./zig-out/bin/invoke run examples/sandbox/topology.lua
 ```
 
 ---

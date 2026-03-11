@@ -93,12 +93,23 @@ pub fn ParseSchema(comptime input: []const u8) []const Field {
 }
 
 pub fn GetTypeSize(type_str: []const u8) usize {
-    if (std.mem.eql(u8, type_str, "f32")) return @sizeOf(f32);
-    if (std.mem.eql(u8, type_str, "f64")) return @sizeOf(f64);
-    if (std.mem.eql(u8, type_str, "i32")) return @sizeOf(i32);
-    if (std.mem.eql(u8, type_str, "u32")) return @sizeOf(u32);
-    if (std.mem.eql(u8, type_str, "bool")) return @sizeOf(bool);
-    return 0;
+    var base_type = type_str;
+    var count: usize = 1;
+
+    if (std.mem.indexOf(u8, type_str, "[")) |idx| {
+        base_type = type_str[0..idx];
+        const end = std.mem.indexOf(u8, type_str, "]") orelse type_str.len;
+        count = std.fmt.parseInt(usize, type_str[idx+1..end], 10) catch 1;
+    }
+
+    const base_size: usize = if (std.mem.eql(u8, base_type, "f32")) @sizeOf(f32)
+                  else if (std.mem.eql(u8, base_type, "f64")) @sizeOf(f64)
+                  else if (std.mem.eql(u8, base_type, "i32")) @sizeOf(i32)
+                  else if (std.mem.eql(u8, base_type, "u32")) @sizeOf(u32)
+                  else if (std.mem.eql(u8, base_type, "bool")) @sizeOf(bool)
+                  else 0;
+    
+    return base_size * count;
 }
 
 pub fn CalculateSchemaSize(input: []const u8) usize {
@@ -121,8 +132,15 @@ pub fn generateCStruct(allocator: std.mem.Allocator, name: []const u8, schema_st
     while (it.next()) |entry| {
         var parts = std.mem.tokenizeAny(u8, entry, ":");
         const f_name = parts.next() orelse continue;
-        const f_type = parts.next() orelse continue;
+        const f_type_raw = parts.next() orelse continue;
         
+        var f_type = f_type_raw;
+        var array_part: []const u8 = "";
+        if (std.mem.indexOf(u8, f_type_raw, "[")) |idx| {
+            f_type = f_type_raw[0..idx];
+            array_part = f_type_raw[idx..];
+        }
+
         const c_type = if (std.mem.eql(u8, f_type, "f32")) "float"
                   else if (std.mem.eql(u8, f_type, "f64")) "double"
                   else if (std.mem.eql(u8, f_type, "i32")) "int32_t"
@@ -130,7 +148,7 @@ pub fn generateCStruct(allocator: std.mem.Allocator, name: []const u8, schema_st
                   else if (std.mem.eql(u8, f_type, "bool")) "bool"
                   else "uint8_t";
                   
-        try list.writer().print("    {s} {s};\n", .{ c_type, f_name });
+        try list.writer().print("    {s} {s}{s};\n", .{ c_type, f_name, array_part });
     }
     
     // Replace dots with underscores for valid C identifier

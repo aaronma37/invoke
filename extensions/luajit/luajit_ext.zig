@@ -39,9 +39,14 @@ const LuaNode = struct {
         
         c.lua_setglobal(self.L, "invoke");
 
-        // Initial load
-        _ = c.luaL_loadfile(self.L, script_path);
-        _ = c.lua_pcall(self.L, 0, c.LUA_MULTRET, 0);
+        const s_path = std.mem.span(script_path);
+        if (!std.mem.eql(u8, s_path, "none")) {
+            // Initial load
+            if (c.luaL_loadfile(self.L, script_path) != 0 or c.lua_pcall(self.L, 0, c.LUA_MULTRET, 0) != 0) {
+                const err = c.lua_tolstring(self.L, -1, null);
+                std.debug.print("[LuaJIT Init Error] {s}\n", .{err});
+            }
+        }
         
         return self;
     }

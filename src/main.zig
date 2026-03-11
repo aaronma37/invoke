@@ -5,6 +5,12 @@ const node = @import("core/node.zig");
 const schema = @import("core/schema.zig");
 const sandbox = @import("core/sandbox.zig");
 
+const l = @cImport({
+    @cInclude("lua.h");
+    @cInclude("lualib.h");
+    @cInclude("lauxlib.h");
+});
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -21,12 +27,12 @@ pub fn main() !void {
     const command = args[1];
 
     if (std.mem.eql(u8, command, "run")) {
-        const topo_path = if (args.len > 2) args[2] else "topology.json";
+        const topo_path = if (args.len > 2) args[2] else "topology.lua";
         try cmdRun(allocator, topo_path);
     } else if (std.mem.eql(u8, command, "init")) {
         try cmdInit();
     } else if (std.mem.eql(u8, command, "version")) {
-        std.debug.print("Invoke Kernel v0.4.0\n", .{});
+        std.debug.print("Invoke Kernel v0.5.0 (Lua-Config Edition)\n", .{});
         std.debug.print("Silicon ABI v{d}\n", .{node.abi.INVOKE_ABI_VERSION});
     } else {
         printUsage();
@@ -38,7 +44,7 @@ fn printUsage() void {
         \\Invoke: The AI-Native Runtime Engine
         \\
         \\Usage:
-        \\  invoke run [topology.json]  Boot the pure silicon kernel
+        \\  invoke run [topology.lua]   Boot the pure silicon kernel
         \\  invoke init                Scaffold a new Invoke project
         \\  invoke version             Display version info
         \\
@@ -52,22 +58,22 @@ fn cmdInit() !void {
     try std.fs.cwd().makePath("gen");
     
     const default_topo = 
-        \\{
-        \\  "namespaces": {
-        \\    "app": {
-        \\      "wires": { "stats": "x:f32;y:f32" },
-        \\      "nodes": []
+        \\return {
+        \\  namespaces = {
+        \\    app = {
+        \\      wires = { stats = "x:f32;y:f32" },
+        \\      nodes = {}
         \\    }
         \\  }
         \\}
     ;
     
-    try std.fs.cwd().writeFile(.{ .sub_path = "topology.json", .data = default_topo });
-    std.debug.print("[CLI] Created topology.json, ext/, and gen/.\n", .{});
+    try std.fs.cwd().writeFile(.{ .sub_path = "topology.lua", .data = default_topo });
+    std.debug.print("[CLI] Created topology.lua, ext/, and gen/.\n", .{});
 }
 
 fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
-    std.debug.print("Initializing Invoke Kernel (Indestructible Mode)...\n", .{});
+    std.debug.print("Initializing Invoke Kernel (Lua-Config Mode)...\n", .{});
 
     // Register Signal Handler
     sandbox.initSignalHandler();
@@ -104,10 +110,12 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
         topo_file.close();
 
         if (stat.mtime > last_topology_mtime) {
-            std.debug.print("\n[Kernel] Hot-swapping GRAPH TOPOLOGY...\n", .{});
+            std.debug.print("\n[Kernel] Hot-swapping GRAPH TOPOLOGY (Lua)...\n", .{});
             last_topology_mtime = stat.mtime;
             sandbox.is_recovering = false;
-            try reloadTopology(allocator, &orch, topo_path);
+            reloadTopology(allocator, &orch, topo_path) catch |err| {
+                std.debug.print("[Kernel Error] Failed to reload topology: {any}\n", .{err});
+            };
         }
 
         if (frame_count % 10 == 0) try orch.poke("on_collision");
@@ -124,7 +132,15 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
         orch.swapAllWires();
         
         // 3. Monitor
-        if (orch.getWire("player.stats")) |w| {
+        if (orch.getWire("swarm.boids_north")) |w| {
+            w.setAccess(std.posix.PROT.READ);
+            const ptr: [*]u8 = @ptrCast(w.ptr());
+            const count = @as(*i32, @ptrCast(@alignCast(ptr))).*;
+            const x = @as(*f32, @ptrCast(@alignCast(ptr + 4))).*;
+            const y = @as(*f32, @ptrCast(@alignCast(ptr + 4004))).*;
+            std.debug.print("[Monitor] Boids North: {d} | First Boid: ({d: >5.2}, {d: >5.2})\n", .{ count, x, y });
+            w.setAccess(std.posix.PROT.NONE);
+        } else if (orch.getWire("player.stats")) |w| {
             w.setAccess(std.posix.PROT.READ);
             const ptr: [*]u8 = @ptrCast(w.ptr());
             const x = @as(*f32, @ptrCast(@alignCast(ptr))).*;
@@ -137,34 +153,55 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
 }
 
 fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator, path: []const u8) !void {
-    const file_content = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
-    defer allocator.free(file_content);
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, file_content, .{});
-    defer parsed.deinit();
-    const namespaces = parsed.value.object.get("namespaces") orelse return error.NoNamespaces;
+    const L = l.luaL_newstate() orelse return error.LuaInitFailed;
+    defer l.lua_close(L);
+    l.luaL_openlibs(L);
+
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+
+    if (l.luaL_dofile(L, path_z.ptr)) {
+        const err_msg = l.lua_tolstring(L, -1, null);
+        std.debug.print("[Kernel Error] Lua Topology Error: {s}\n", .{err_msg});
+        return error.LuaTopologyError;
+    }
+
+    if (l.lua_type(L, -1) != l.LUA_TTABLE) return error.TopologyMustReturnTable;
 
     // Phase 1: Wires & Header Synthesis
     var c_headers = std.ArrayList(u8).init(allocator);
     defer c_headers.deinit();
     try c_headers.appendSlice("#ifndef INVOKE_WIRES_H\n#define INVOKE_WIRES_H\n\n#include <stdint.h>\n#include <stdbool.h>\n\n");
 
-    var ns_it = namespaces.object.iterator();
-    while (ns_it.next()) |ns_entry| {
-        const ns_name = ns_entry.key_ptr.*;
-        if (ns_entry.value_ptr.*.object.get("wires")) |wires| {
-            var wire_it = wires.object.iterator();
-            while (wire_it.next()) |w_entry| {
-                const w_name = w_entry.key_ptr.*;
+    var lua_headers = std.ArrayList(u8).init(allocator);
+    defer lua_headers.deinit();
+    try lua_headers.appendSlice("local ffi = require(\"ffi\")\nffi.cdef[[\ntypedef int int32_t;\ntypedef unsigned int uint32_t;\n\n");
+
+    l.lua_getfield(L, -1, "namespaces");
+    if (l.lua_type(L, -1) != l.LUA_TTABLE) return error.NoNamespaces;
+
+    // Iterate over namespaces
+    l.lua_pushnil(L);
+    while (l.lua_next(L, -2) != 0) {
+        const ns_name = std.mem.span(l.lua_tolstring(L, -2, null));
+        
+        l.lua_getfield(L, -1, "wires");
+        if (l.lua_type(L, -1) == l.LUA_TTABLE) {
+            l.lua_pushnil(L);
+            while (l.lua_next(L, -2) != 0) {
+                const w_name = std.mem.span(l.lua_tolstring(L, -2, null));
                 var w_schema: []const u8 = undefined;
                 var w_buffered = false;
 
-                if (w_entry.value_ptr.* == .string) {
-                    w_schema = w_entry.value_ptr.*.string;
+                if (l.lua_type(L, -1) == l.LUA_TSTRING) {
+                    w_schema = std.mem.span(l.lua_tolstring(L, -1, null));
                 } else {
-                    w_schema = w_entry.value_ptr.*.object.get("schema").?.string;
-                    if (w_entry.value_ptr.*.object.get("buffered")) |b| {
-                        w_buffered = b.bool;
-                    }
+                    l.lua_getfield(L, -1, "schema");
+                    w_schema = std.mem.span(l.lua_tolstring(L, -1, null));
+                    l.lua_pop(L, 1);
+                    l.lua_getfield(L, -1, "buffered");
+                    w_buffered = if (l.lua_type(L, -1) == l.LUA_TBOOLEAN) l.lua_toboolean(L, -1) != 0 else false;
+                    l.lua_pop(L, 1);
                 }
 
                 const full_path = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_name, w_name });
@@ -173,7 +210,6 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
                 const size = schema.CalculateSchemaSize(w_schema);
                 const w = try orch.addWire(full_path, w_schema, size, w_buffered);
                 
-                // Initialize health if it's a NEW player.stats wire
                 if (!w_existed and std.mem.eql(u8, full_path, "player.stats")) {
                     w.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
                     const base_ptr: [*]u8 = @ptrCast(w.backPtr());
@@ -181,63 +217,98 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
                     health_ptr.* = 100;
                     w.setAccess(std.posix.PROT.NONE);
                 }
+
+                if (!w_existed and std.mem.startsWith(u8, full_path, "swarm.boids")) {
+                    w.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
+                    const base_ptr: [*]u8 = @ptrCast(w.backPtr());
+                    const count_ptr: *i32 = @ptrCast(@alignCast(base_ptr));
+                    count_ptr.* = 100;
+
+                    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+                    const rand = prng.random();
+                    const is_north = std.mem.indexOf(u8, full_path, "north") != null;
+                    const y_offset: f32 = if (is_north) 150.0 else -150.0;
+
+                    for (0..100) |i| {
+                        const px_ptr: *f32 = @ptrCast(@alignCast(base_ptr + 4 + (i * 4)));
+                        const py_ptr: *f32 = @ptrCast(@alignCast(base_ptr + 4004 + (i * 4)));
+                        const vx_ptr: *f32 = @ptrCast(@alignCast(base_ptr + 8004 + (i * 4)));
+                        const vy_ptr: *f32 = @ptrCast(@alignCast(base_ptr + 12004 + (i * 4)));
+
+                        px_ptr.* = rand.float(f32) * 400.0 - 200.0;
+                        py_ptr.* = rand.float(f32) * 200.0 - 100.0 + y_offset;
+                        vx_ptr.* = rand.float(f32) * 2.0 - 1.0;
+                        vy_ptr.* = rand.float(f32) * 2.0 - 1.0;
+                    }
+                    w.setAccess(std.posix.PROT.NONE);
+                }
                 
                 const struct_def = try schema.generateCStruct(allocator, full_path, w_schema);
                 defer allocator.free(struct_def);
                 try c_headers.appendSlice(struct_def);
+                try lua_headers.appendSlice(struct_def);
+
+                l.lua_pop(L, 1); 
             }
         }
+        l.lua_pop(L, 1); 
+        l.lua_pop(L, 1); 
     }
+    l.lua_pop(L, 1); 
+
     try c_headers.appendSlice("#endif\n");
     try std.fs.cwd().makePath("gen");
     try std.fs.cwd().writeFile(.{ .sub_path = "gen/wires.h", .data = c_headers.items });
 
-    var lua_headers = std.ArrayList(u8).init(allocator);
-    defer lua_headers.deinit();
-    try lua_headers.appendSlice("local ffi = require(\"ffi\")\nffi.cdef[[\ntypedef int int32_t;\ntypedef unsigned int uint32_t;\n\n");
-    ns_it = namespaces.object.iterator();
-    while (ns_it.next()) |ns_entry| {
-        const ns_name = ns_entry.key_ptr.*;
-        if (ns_entry.value_ptr.*.object.get("wires")) |wires| {
-            var wire_it = wires.object.iterator();
-            while (wire_it.next()) |w_entry| {
-                var w_schema: []const u8 = undefined;
-                if (w_entry.value_ptr.* == .string) {
-                    w_schema = w_entry.value_ptr.*.string;
-                } else {
-                    w_schema = w_entry.value_ptr.*.object.get("schema").?.string;
-                }
-
-                const full_path = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_name, w_entry.key_ptr.* });
-                defer allocator.free(full_path);
-                const struct_def = try schema.generateCStruct(allocator, full_path, w_schema);
-                defer allocator.free(struct_def);
-                try lua_headers.appendSlice(struct_def);
-            }
-        }
-    }
     try lua_headers.appendSlice("]]\nreturn {}\n");
     try std.fs.cwd().writeFile(.{ .sub_path = "gen_wires.lua", .data = lua_headers.items });
-    std.debug.print("[Kernel] Header Synthesis Complete: gen/wires.h, gen_wires.lua\n", .{});
 
     // Phase 2: Nodes
-    ns_it = namespaces.object.iterator();
-    while (ns_it.next()) |ns_entry| {
-        const ns_name = ns_entry.key_ptr.*;
-        if (ns_entry.value_ptr.*.object.get("nodes")) |nodes| {
-            for (nodes.array.items) |n_val| {
-                const n_obj = n_val.object;
-                const n_name = n_obj.get("name").?.string;
-                const ext_type = n_obj.get("type").?.string;
-                const n_mode_str = n_obj.get("mode").?.string;
-                const n_script = n_obj.get("script").?.string;
+    l.lua_getfield(L, -1, "namespaces");
+    l.lua_pushnil(L);
+    while (l.lua_next(L, -2) != 0) {
+        const ns_name = std.mem.span(l.lua_tolstring(L, -2, null));
+        l.lua_getfield(L, -1, "nodes");
+        if (l.lua_type(L, -1) == l.LUA_TTABLE) {
+            const n_count = l.lua_objlen(L, -1);
+            for (1..n_count + 1) |i| {
+                l.lua_pushinteger(L, @intCast(i));
+                l.lua_gettable(L, -2); 
+
+                l.lua_getfield(L, -1, "name");
+                const n_name = std.mem.span(l.lua_tolstring(L, -1, null));
+                l.lua_pop(L, 1);
+
+                l.lua_getfield(L, -1, "type");
+                const ext_type = std.mem.span(l.lua_tolstring(L, -1, null));
+                l.lua_pop(L, 1);
+
+                l.lua_getfield(L, -1, "mode");
+                const n_mode_str = if (l.lua_type(L, -1) == l.LUA_TSTRING) std.mem.span(l.lua_tolstring(L, -1, null)) else "Heartbeat";
+                l.lua_pop(L, 1);
+
+                l.lua_getfield(L, -1, "script");
+                const n_script = if (l.lua_type(L, -1) == l.LUA_TSTRING) std.mem.span(l.lua_tolstring(L, -1, null)) else "none";
+                l.lua_pop(L, 1);
+
                 const full_path = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_name, n_name });
                 defer allocator.free(full_path);
                 const mode = if (std.mem.eql(u8, n_mode_str, "Poke")) orchestrator.ExecutionMode.Poke else orchestrator.ExecutionMode.Heartbeat;
-                const n = try orch.createNode(full_path, ext_type, mode, n_script);
-                if (n_obj.get("triggers")) |triggers| {
-                    for (triggers.array.items) |t_val| try n.addTrigger(t_val.string);
+                
+                // BOOTLOADER FIX: Create node with "none" first
+                const n = try orch.createNode(full_path, ext_type, mode, "none");
+                
+                l.lua_getfield(L, -1, "triggers");
+                if (l.lua_type(L, -1) == l.LUA_TTABLE) {
+                    const t_count = l.lua_objlen(L, -1);
+                    for (1..t_count + 1) |ti| {
+                        l.lua_pushinteger(L, @intCast(ti));
+                        l.lua_gettable(L, -2);
+                        try n.addTrigger(std.mem.span(l.lua_tolstring(L, -1, null)));
+                        l.lua_pop(L, 1);
+                    }
                 }
+                l.lua_pop(L, 1);
 
                 var guest_offsets = std.ArrayList(u8).init(allocator);
                 defer guest_offsets.deinit();
@@ -246,15 +317,19 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
 
                 var bound_paths = std.StringHashMap(void).init(allocator);
                 defer {
-                    var it = bound_paths.keyIterator();
-                    while (it.next()) |k| allocator.free(k.*);
+                    var bit = bound_paths.keyIterator();
+                    while (bit.next()) |k| allocator.free(k.*);
                     bound_paths.deinit();
                 }
 
                 inline for (.{ "reads", "writes" }) |field| {
-                    if (n_obj.get(field)) |wires| {
-                        for (wires.array.items) |w_val| {
-                            const wire_ref = w_val.string;
+                    l.lua_getfield(L, -1, field);
+                    if (l.lua_type(L, -1) == l.LUA_TTABLE) {
+                        const w_count = l.lua_objlen(L, -1);
+                        for (1..w_count + 1) |wi| {
+                            l.lua_pushinteger(L, @intCast(wi));
+                            l.lua_gettable(L, -2);
+                            const wire_ref = std.mem.span(l.lua_tolstring(L, -1, null));
                             const wire_path = if (std.mem.indexOf(u8, wire_ref, ".") != null) try allocator.dupe(u8, wire_ref) else try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_name, wire_ref });
                             defer allocator.free(wire_path);
 
@@ -272,18 +347,30 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
                                     current_offset += (w.size + 15) & ~@as(usize, 15);
                                 }
                             }
+                            l.lua_pop(L, 1);
                         }
                     }
+                    l.lua_pop(L, 1);
                 }
+
+                // FINALIZE: Set real script path so it loads after wires are bound
+                allocator.free(n.script_path);
+                n.script_path = try allocator.dupe(u8, n_script);
+
                 try guest_offsets.appendSlice("\n#endif\n");
                 if (std.mem.eql(u8, ext_type, "wasm")) {
                     const offset_filename = try std.fmt.allocPrint(allocator, "gen/{s}_offsets.h", .{n_name});
                     defer allocator.free(offset_filename);
                     try std.fs.cwd().writeFile(.{ .sub_path = offset_filename, .data = guest_offsets.items });
                 }
+
+                l.lua_pop(L, 1); 
             }
         }
+        l.lua_pop(L, 1); 
+        l.lua_pop(L, 1); 
     }
+    l.lua_pop(L, 1); 
 
     try orch.rebuildTaskGraph();
 }

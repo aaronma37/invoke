@@ -70,42 +70,37 @@ const WasmNode = struct {
             return error.WasmModuleNewFailed;
         }
 
-        // CREATE HOST IMPORTS
-        var result_vec_empty: c.wasm_valtype_vec_t = undefined;
-        c.wasm_valtype_vec_new_empty(&result_vec_empty);
+        // CREATE LINKER
+        const linker = c.wasmtime_linker_new(self.engine);
+        defer c.wasmtime_linker_delete(linker);
 
-        // 1. invoke_log (i32, i32, i32) -> ()
+        // 1. invoke_log
         var params_log: [3]*c.wasm_valtype_t = undefined;
         params_log[0] = c.wasm_valtype_new(c.WASM_I32).?;
         params_log[1] = c.wasm_valtype_new(c.WASM_I32).?;
         params_log[2] = c.wasm_valtype_new(c.WASM_I32).?;
         var param_vec_log: c.wasm_valtype_vec_t = undefined;
         c.wasm_valtype_vec_new(&param_vec_log, 3, @ptrCast(&params_log));
+        var result_vec_empty: c.wasm_valtype_vec_t = undefined;
+        c.wasm_valtype_vec_new_empty(&result_vec_empty);
         const functype_log = c.wasm_functype_new(&param_vec_log, &result_vec_empty);
-        var log_func: c.wasmtime_func_t = undefined;
-        c.wasmtime_func_new(self.context, functype_log, @ptrCast(&wasm_log_callback), self, null, &log_func);
+        _ = c.wasmtime_linker_define_func(linker, "env", 3, "invoke_log", 10, functype_log, @ptrCast(&wasm_log_callback), self, null);
         c.wasm_functype_delete(functype_log);
 
-        // 2. invoke_poke (i32, i32) -> ()
+        // 2. invoke_poke
         var params_poke: [2]*c.wasm_valtype_t = undefined;
         params_poke[0] = c.wasm_valtype_new(c.WASM_I32).?;
         params_poke[1] = c.wasm_valtype_new(c.WASM_I32).?;
         var param_vec_poke: c.wasm_valtype_vec_t = undefined;
         c.wasm_valtype_vec_new(&param_vec_poke, 2, @ptrCast(&params_poke));
         const functype_poke = c.wasm_functype_new(&param_vec_poke, &result_vec_empty);
-        var poke_func: c.wasmtime_func_t = undefined;
-        c.wasmtime_func_new(self.context, functype_poke, @ptrCast(&wasm_poke_callback), self, null, &poke_func);
+        _ = c.wasmtime_linker_define_func(linker, "env", 3, "invoke_poke", 11, functype_poke, @ptrCast(&wasm_poke_callback), self, null);
         c.wasm_functype_delete(functype_poke);
 
-        const imports: [2]c.wasmtime_extern_t = .{ 
-            .{ .kind = c.WASMTIME_EXTERN_FUNC, .of = .{ .func = log_func } },
-            .{ .kind = c.WASMTIME_EXTERN_FUNC, .of = .{ .func = poke_func } } 
-        };
-
         var trap: ?*c.wasm_trap_t = null;
-        err = c.wasmtime_instance_new(self.context, self.module, &imports, 2, &self.instance, &trap);
+        err = c.wasmtime_linker_instantiate(linker, self.context, self.module, &self.instance, &trap);
         if (err != null or trap != null) {
-            std.debug.print("[WASM Ext] wasmtime_instance_new failed (err: {?}, trap: {?})\n", .{ err, trap });
+            std.debug.print("[WASM Ext] wasmtime_linker_instantiate failed (err: {?}, trap: {?})\n", .{ err, trap });
             return error.WasmInstantiateFailed;
         }
 

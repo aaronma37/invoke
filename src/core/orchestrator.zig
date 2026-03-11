@@ -222,13 +222,13 @@ pub const Orchestrator = struct {
             defer threads.deinit();
 
             for (level.items) |n| {
-                if (std.mem.eql(u8, n.name, "debug.visualizer")) continue;
+                if (std.mem.indexOf(u8, n.name, "visualizer") != null) continue;
                 try threads.append(try std.Thread.spawn(.{}, parallelWorker, .{ self, n }));
             }
 
             // Run Main-Thread nodes LOCALLY while workers are busy
             for (level.items) |n| {
-                if (std.mem.eql(u8, n.name, "debug.visualizer")) {
+                if (std.mem.indexOf(u8, n.name, "visualizer") != null) {
                     try self.executeNode(n);
                 }
             }
