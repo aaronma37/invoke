@@ -43,6 +43,18 @@ pub fn build(b: *std.Build) void {
     });
     b.getInstallStep().dependOn(&luajit_install.step);
 
+    // 2.5 LIBMOONTIDE (Host Shared Library)
+    const moontide_lib = b.addSharedLibrary(.{
+        .name = "moontide",
+        .root_source_file = b.path("src/core/orchestrator.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    moontide_lib.linkLibC();
+    moontide_lib.addIncludePath(b.path("sdk"));
+    moontide_lib.addIncludePath(b.path("src/core"));
+    b.installArtifact(moontide_lib);
+
     // 3. WASM EXTENSION
     const wasm_ext = b.addSharedLibrary(.{
         .name = "wasm_ext",

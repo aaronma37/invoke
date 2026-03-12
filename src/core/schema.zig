@@ -109,6 +109,7 @@ pub fn GetTypeSize(type_str: []const u8) usize {
                   else if (std.mem.eql(u8, base_type, "u8")) @sizeOf(u8)
                   else if (std.mem.eql(u8, base_type, "i8")) @sizeOf(i8)
                   else if (std.mem.eql(u8, base_type, "bool")) @sizeOf(bool)
+                  else if (std.mem.eql(u8, base_type, "char")) 1
                   else 0;
     
     return base_size * count;
@@ -148,6 +149,7 @@ pub fn generateCStruct(allocator: std.mem.Allocator, name: []const u8, schema_st
                   else if (std.mem.eql(u8, f_type, "i32")) "int32_t"
                   else if (std.mem.eql(u8, f_type, "u32")) "uint32_t"
                   else if (std.mem.eql(u8, f_type, "bool")) "bool"
+                  else if (std.mem.eql(u8, f_type, "char")) "char"
                   else "uint8_t";
                   
         try list.writer().print("    {s} {s}{s};\n", .{ c_type, f_name, array_part });

@@ -36,6 +36,9 @@ const LuaNode = struct {
         
         c.lua_pushcfunction(self.L, luaPoke);
         c.lua_setfield(self.L, -2, "poke");
+
+        c.lua_pushcfunction(self.L, luaSleep);
+        c.lua_setfield(self.L, -2, "sleep");
         
         c.lua_setglobal(self.L, "moontide");
 
@@ -73,6 +76,12 @@ fn luaPoke(L: ?*c.lua_State) callconv(.C) c_int {
     if (global_poke_handler) |poke| {
         poke.?(event_name);
     }
+    return 0;
+}
+
+fn luaSleep(L: ?*c.lua_State) callconv(.C) c_int {
+    const ms = c.luaL_checkinteger(L, 1);
+    std.time.sleep(@intCast(ms * std.time.ns_per_ms));
     return 0;
 }
 

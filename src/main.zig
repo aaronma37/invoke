@@ -184,6 +184,7 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
     try orch.init(allocator);
     defer orch.deinit();
     
+    // Set current_orch before any reloadTopology calls!
     @import("core/extension.zig").current_orch = &orch;
 
     var last_topology_mtime: i128 = 0;
@@ -233,6 +234,8 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
 
         orch.swapAllWires();
         
+        std.time.sleep(16 * std.time.ns_per_ms);
+
         // 3. Monitor
         if (orch.getWire("swarm.boids_north")) |w| {
             w.setAccess(std.posix.PROT.READ);
@@ -256,6 +259,30 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
             const now = @as(*f64, @ptrCast(@alignCast(ptr))).*;
             const processed = @as(*i32, @ptrCast(@alignCast(ptr + 8))).*;
             std.debug.print("[Monitor] ER Sim Time: {d: >7.2} | Patients Handled: {d}\n", .{ now, processed });
+            w.setAccess(std.posix.PROT.NONE);
+        } else if (orch.getWire("claw.command")) |w| {
+            w.setAccess(std.posix.PROT.READ);
+            const ptr: [*]u8 = @ptrCast(w.ptr());
+            const op = @as(*i32, @ptrCast(@alignCast(ptr))).*;
+            const path_ptr: [*c]const u8 = @ptrCast(ptr + 4);
+            
+            var status: i32 = 0;
+            if (orch.getWire("claw.security")) |sw| {
+                sw.setAccess(std.posix.PROT.READ);
+                const sptr: [*]u8 = @ptrCast(sw.ptr());
+                status = @as(*i32, @ptrCast(@alignCast(sptr))).*;
+                sw.setAccess(std.posix.PROT.NONE);
+            }
+
+            const status_str = switch(status) {
+                0 => "PENDING ",
+                1 => "ALLOWED ",
+                2 => "DENIED  ",
+                else => "UNKNOWN ",
+            };
+
+            std.debug.print("[Monitor Claw] Op: {d} | Path: {s: <12} | Security: {s}\n", 
+                .{ op, path_ptr, status_str });
             w.setAccess(std.posix.PROT.NONE);
         }
     }

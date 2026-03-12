@@ -16,6 +16,7 @@ pub const WireBinding = struct {
 /// it doesn't know about Lua or WASM; it only knows about the Handshake.
 pub const Node = struct {
     name: []const u8,
+    ext_type: []const u8,
     mode: orchestrator.ExecutionMode,
     script_path: []const u8,
     allocator: std.mem.Allocator,
@@ -42,6 +43,7 @@ pub const Node = struct {
     pub fn init(
         allocator: std.mem.Allocator, 
         name: []const u8, 
+        ext_type: []const u8,
         mode: orchestrator.ExecutionMode, 
         script_path: []const u8,
         vtable: abi.moontide_extension_t,
@@ -49,6 +51,7 @@ pub const Node = struct {
     ) !Node {
         return Node{
             .name = try allocator.dupe(u8, name),
+            .ext_type = try allocator.dupe(u8, ext_type),
             .mode = mode,
             .script_path = try allocator.dupe(u8, script_path),
             .allocator = allocator,
@@ -63,6 +66,7 @@ pub const Node = struct {
     pub fn deinit(self: *Node) void {
         self.vtable.destroy_node.?(self.handle);
         self.allocator.free(self.name);
+        self.allocator.free(self.ext_type);
         self.allocator.free(self.script_path);
         
         var it = self.bound_wires.keyIterator();
@@ -90,11 +94,6 @@ pub const Node = struct {
     }
 
     pub fn bindWire(self: *Node, wire_name: []const u8, w: *wire.RawWire, access: u32) void {
-        const name_z = self.allocator.dupeZ(u8, wire_name) catch return;
-        defer self.allocator.free(name_z);
-        
-        _ = self.vtable.bind_wire.?(self.handle, name_z.ptr, w.ptr(), access);
-        
         // Track binding for Silicon Gating (mprotect)
         if (self.bound_wires.getPtr(wire_name)) |existing| {
             existing.wire = w;
@@ -104,6 +103,25 @@ pub const Node = struct {
                 .wire = w,
                 .access = access,
             }) catch return;
+        }
+
+        self.refreshBindings();
+    }
+
+    pub fn refreshBindings(self: *Node) void {
+        var it = self.bound_wires.iterator();
+        while (it.next()) |entry| {
+            const wire_name = entry.key_ptr.*;
+            const binding = entry.value_ptr;
+            const w = binding.wire;
+            
+            const name_z = self.allocator.dupeZ(u8, wire_name) catch continue;
+            defer self.allocator.free(name_z);
+
+            const is_write = (binding.access & 2 != 0);
+            const ptr = if (w.is_buffered and is_write) w.banks[1 - w.front_index].ptr else w.banks[w.front_index].ptr;
+            
+            _ = self.vtable.bind_wire.?(self.handle, name_z.ptr, ptr, binding.access);
         }
     }
 
@@ -133,7 +151,10 @@ pub const Node = struct {
             }
         }
 
-        // 2. Perform the Tick
+        // 2. Refresh pointers (Bank Swap recovery)
+        self.refreshBindings();
+
+        // 3. Perform the Tick
         _ = self.vtable.tick.?(self.handle);
     }
 };

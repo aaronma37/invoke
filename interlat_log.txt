@@ -1,0 +1,52 @@
+Initializing Moontide Kernel (Lua-Config Mode)...
+
+[Kernel] Hot-swapping GRAPH TOPOLOGY (Lua)...
+[Orchestrator] Registered Wire: interlat.output_stream (4 bytes, Buffered: false)
+[Orchestrator] Registered Wire: interlat.latent_thought (516 bytes, Buffered: true)
+[ExtensionManager] Loaded Runtime: luajit (from ./ext/)
+[Orchestrator] Task Graph: 3 parallel levels.
+[Node interlat.decoder] Hot-reloading script: examples/interlat/decoder.lua
+[Node interlat.modulator] Hot-reloading script: examples/interlat/modulator.lua
+[Node interlat.encoder] Hot-reloading script: examples/interlat/encoder.lua
+[Monitor Latent] Concept: 1 | Word: Unknown      | Latent Intensity:  0.00
+[Monitor Latent] Concept: 1 | Word: Tranquility  | Latent Intensity:  0.25
+[Monitor Latent] Concept: 1 | Word: Tranquility  | Latent Intensity:  0.25
+[Monitor Latent] Concept: 1 | Word: Tranquility  | Latent Intensity:  0.25
+[Monitor Latent] Concept: 1 | Word: Tranquility  | Latent Intensity:  0.25
+[Monitor Latent] Concept: 1 | Word: Tranquility  | Latent Intensity:  0.25
+[Monitor Latent] Concept: 2 | Word: Tranquility  | Latent Intensity:  0.25
+[Monitor Latent] Concept: 2 | Word: Turbulence   | Latent Intensity:  0.44
+[Monitor Latent] Concept: 2 | Word: Turbulence   | Latent Intensity:  0.45
+[Monitor Latent] Concept: 2 | Word: Turbulence   | Latent Intensity:  0.45
+[Monitor Latent] Concept: 2 | Word: Turbulence   | Latent Intensity:  0.45
+[Monitor Latent] Concept: 2 | Word: Turbulence   | Latent Intensity:  0.45
+[Monitor Latent] Concept: 3 | Word: Turbulence   | Latent Intensity:  0.45
+[Monitor Latent] Concept: 3 | Word: Growth       | Latent Intensity:  0.65
+[Monitor Latent] Concept: 3 | Word: Growth       | Latent Intensity:  0.65
+[Monitor Latent] Concept: 3 | Word: Growth       | Latent Intensity:  0.65
+[Monitor Latent] Concept: 3 | Word: Growth       | Latent Intensity:  0.65
+[Monitor Latent] Concept: 3 | Word: Growth       | Latent Intensity:  0.65
+[Monitor Latent] Concept: 4 | Word: Growth       | Latent Intensity:  0.65
+[Monitor Latent] Concept: 4 | Word: Precision    | Latent Intensity:  0.85
+[Monitor Latent] Concept: 4 | Word: Precision    | Latent Intensity:  0.85
+[Monitor Latent] Concept: 4 | Word: Precision    | Latent Intensity:  0.85
+[Monitor Latent] Concept: 4 | Word: Precision    | Latent Intensity:  0.85
+[Monitor Latent] Concept: 4 | Word: Precision    | Latent Intensity:  0.85
+[Monitor Latent] Concept: 4 | Word: Precision    | Latent Intensity:  0.85
+[Monitor Latent] Concept: 1 | Word: Precision    | Latent Intensity:  0.85
+[Monitor Latent] Concept: 1 | Word: Tranquility  | Latent Intensity:  0.25
+[Monitor Latent] Concept: 1 | Word: Tranquility  | Latent Intensity:  0.25
+[Monitor Latent] Concept: 1 | Word: Tranquility  | Latent Intensity:  0.25
+[Monitor Latent] Concept: 1 | Word: Tranquility  | Latent Intensity:  0.25
+[Monitor Latent] Concept: 1 | Word: Tranquility  | Latent Intensity:  0.25
+[Monitor Latent] Concept: 2 | Word: Tranquility  | Latent Intensity:  0.25
+[Monitor Latent] Concept: 2 | Word: Turbulence   | Latent Intensity:  0.45
+[Monitor Latent] Concept: 2 | Word: Turbulence   | Latent Intensity:  0.45
+[Monitor Latent] Concept: 2 | Word: Turbulence   | Latent Intensity:  0.45
+[Monitor Latent] Concept: 2 | Word: Turbulence   | Latent Intensity:  0.45
+[Monitor Latent] Concept: 2 | Word: Turbulence   | Latent Intensity:  0.45
+[Monitor Latent] Concept: 3 | Word: Turbulence   | Latent Intensity:  0.45
+[Monitor Latent] Concept: 3 | Word: Growth       | Latent Intensity:  0.65
+[Monitor Latent] Concept: 3 | Word: Growth       | Latent Intensity:  0.65
+[Monitor Latent] Concept: 3 | Word: Growth       | Latent Intensity:  0.65
+[Monitor Latent] Concept: 3 | Word: Growth       | Latent Intensity:  0.64

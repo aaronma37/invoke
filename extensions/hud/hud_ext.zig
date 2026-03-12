@@ -54,13 +54,27 @@ const HudNode = struct {
         rl.BeginDrawing();
         defer rl.EndDrawing();
 
-        rl.ClearBackground(rl.GetColor(0x181818FF));
+        rl.ClearBackground(rl.MAROON);
 
         rl.BeginMode2D(self.camera);
         
         if (global_orch) |orch| {
             const level_spacing: f32 = 300.0;
             const node_spacing: f32 = 100.0;
+
+            // Draw a big yellow circle at origin to verify world-space
+            rl.DrawCircle(0, 0, 50, rl.YELLOW);
+            rl.DrawText("WORLD ORIGIN", -40, 60, 10, rl.BLACK);
+
+            if (orch.getWire("world.particles")) |w| {
+                w.setAccess(std.posix.PROT.READ);
+                const ptr: [*]u8 = @ptrCast(w.ptr());
+                const count = @as(*i32, @ptrCast(@alignCast(ptr))).*;
+                var count_buf: [32]u8 = undefined;
+                const count_text = std.fmt.bufPrintZ(&count_buf, "PARTICLES ON WIRE: {d}", .{count}) catch "ERR";
+                rl.DrawText(count_text.ptr, -100, -100, 20, rl.GREEN);
+                w.setAccess(std.posix.PROT.NONE);
+            }
 
             // 1. Draw Wires (Connections)
             var node_it = orch.nodes.valueIterator();
