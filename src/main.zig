@@ -31,6 +31,18 @@ pub fn main() !void {
         try cmdRun(allocator, topo_path);
     } else if (std.mem.eql(u8, command, "init")) {
         try cmdInit();
+    } else if (std.mem.eql(u8, command, "save")) {
+        if (args.len < 3) {
+            std.debug.print("Usage: moontide save [path.tide]\n", .{});
+            return;
+        }
+        try cmdSave(allocator, args[2]);
+    } else if (std.mem.eql(u8, command, "load")) {
+        if (args.len < 3) {
+            std.debug.print("Usage: moontide load [path.tide]\n", .{});
+            return;
+        }
+        try cmdLoad(allocator, args[2]);
     } else if (std.mem.eql(u8, command, "sdk")) {
         if (args.len < 3) {
             printUsage();
@@ -56,10 +68,28 @@ fn printUsage() void {
         \\Usage:
         \\  moontide run [topology.lua]   Boot the pure silicon kernel
         \\  moontide init                Scaffold a new Moontide project
+        \\  moontide save [path.tide]    Dump current silicon state to disk (placeholder)
+        \\  moontide load [path.tide]    Restore silicon state from disk (placeholder)
         \\  moontide sdk install         Install SDK headers and runtimes globally
         \\  moontide version             Display version info
         \\
     , .{});
+}
+
+fn cmdSave(allocator: std.mem.Allocator, path: []const u8) !void {
+    std.debug.print("[CLI] Saving state to {s}...\n", .{path});
+    
+    // Note: To save a "Running" state, we'd need to attach to a running process.
+    // For now, this is a placeholder for the logic. In a real scenario,
+    // the kernel would handle a 'save' signal or command.
+    _ = allocator;
+    std.debug.print("[CLI] Save complete (Simulation only for now).\n", .{});
+}
+
+fn cmdLoad(allocator: std.mem.Allocator, path: []const u8) !void {
+    std.debug.print("[CLI] Loading state from {s}...\n", .{path});
+    _ = allocator;
+    std.debug.print("[CLI] Load complete (Simulation only for now).\n", .{});
 }
 
 fn cmdInit() !void {
@@ -219,6 +249,13 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
             const health_offset: usize = if (std.mem.indexOf(u8, w.schema_str, "z:f32") != null) 12 else 8;
             const health = @as(*i32, @ptrCast(@alignCast(ptr + health_offset))).*;
             std.debug.print("[Monitor] Frame {d} | Player X: {d: >5.2} | HP: {d}\n", .{ frame_count, x, health });
+            w.setAccess(std.posix.PROT.NONE);
+        } else if (orch.getWire("er.clock")) |w| {
+            w.setAccess(std.posix.PROT.READ);
+            const ptr: [*]u8 = @ptrCast(w.ptr());
+            const now = @as(*f64, @ptrCast(@alignCast(ptr))).*;
+            const processed = @as(*i32, @ptrCast(@alignCast(ptr + 8))).*;
+            std.debug.print("[Monitor] ER Sim Time: {d: >7.2} | Patients Handled: {d}\n", .{ now, processed });
             w.setAccess(std.posix.PROT.NONE);
         }
     }

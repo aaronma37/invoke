@@ -292,6 +292,45 @@ test "Schema Evolution and Data Migration" {
     w2.setAccess(std.posix.PROT.NONE);
 }
 
+test "Eternal Library: State Serialization" {
+    const allocator = std.testing.allocator;
+    
+    // 1. Setup Source Orchestrator
+    var orch1: Orchestrator = undefined;
+    try orch1.init(allocator);
+    defer orch1.deinit();
+
+    const w1 = try orch1.addWire("save.me", "val:i32", 4, true);
+    w1.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
+    @as(*i32, @ptrCast(@alignCast(w1.banks[0].ptr))).* = 1234;
+    @as(*i32, @ptrCast(@alignCast(w1.banks[1].ptr))).* = 5678;
+    w1.setAccess(std.posix.PROT.NONE);
+
+    // 2. Serialize to Buffer
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+    try orch1.dumpToWriter(buffer.writer());
+
+    // 3. Setup Destination Orchestrator
+    var orch2: Orchestrator = undefined;
+    try orch2.init(allocator);
+    defer orch2.deinit();
+
+    // 4. Deserialize
+    var stream = std.io.fixedBufferStream(buffer.items);
+    try orch2.loadFromReader(stream.reader());
+
+    // 5. Verify bits are identical
+    const w2 = orch2.getWire("save.me").?;
+    try std.testing.expectEqual(@as(u64, 4), w2.size);
+    try std.testing.expect(w2.is_buffered);
+
+    w2.setAccess(std.posix.PROT.READ);
+    try std.testing.expectEqual(@as(i32, 1234), @as(*i32, @ptrCast(@alignCast(w2.banks[0].ptr))).*);
+    try std.testing.expectEqual(@as(i32, 5678), @as(*i32, @ptrCast(@alignCast(w2.banks[1].ptr))).*);
+    w2.setAccess(std.posix.PROT.NONE);
+}
+
 test "Type-Change (Ghost Data) Protection" {
     const allocator = std.testing.allocator;
     var orch: Orchestrator = undefined;
@@ -746,5 +785,63 @@ pub const Orchestrator = struct {
 
     pub fn getWire(self: *Orchestrator, path: []const u8) ?*wire.RawWire {
         return self.wires.get(path);
+    }
+
+    pub fn dumpToWriter(self: *Orchestrator, writer: anytype) !void {
+        // 1. Write number of wires
+        try writer.writeInt(u32, @intCast(self.wires.count()), .little);
+
+        var it = self.wires.iterator();
+        while (it.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const w = entry.value_ptr.*;
+
+            // 2. Write Name
+            try writer.writeInt(u32, @intCast(name.len), .little);
+            try writer.writeAll(name);
+
+            // 3. Write Size and Buffered Status
+            try writer.writeInt(u64, w.size, .little);
+            try writer.writeByte(if (w.is_buffered) 1 else 0);
+
+            // 4. Write Data (Both banks if buffered)
+            w.setAccess(std.posix.PROT.READ);
+            defer w.setAccess(std.posix.PROT.NONE);
+
+            try writer.writeAll(w.banks[0][0..w.size]);
+            if (w.is_buffered) {
+                try writer.writeAll(w.banks[1][0..w.size]);
+            }
+        }
+    }
+
+    pub fn loadFromReader(self: *Orchestrator, reader: anytype) !void {
+        const wire_count = try reader.readInt(u32, .little);
+
+        for (0..wire_count) |_| {
+            // 1. Read Name
+            const name_len = try reader.readInt(u32, .little);
+            const name = try self.allocator.alloc(u8, name_len);
+            defer self.allocator.free(name);
+            try reader.readNoEof(name);
+
+            // 2. Read Meta
+            const size = try reader.readInt(u64, .little);
+            const buffered = (try reader.readByte()) != 0;
+
+            // 3. Find or Create Wire
+            // Note: If it doesn't exist, we use a generic schema string for now
+            // as we only care about the bits.
+            const w = try self.addWire(name, "restored:u8", size, buffered);
+
+            // 4. Read Data
+            w.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
+            defer w.setAccess(std.posix.PROT.NONE);
+
+            try reader.readNoEof(w.banks[0][0..size]);
+            if (buffered) {
+                try reader.readNoEof(w.banks[1][0..size]);
+            }
+        }
     }
 };
