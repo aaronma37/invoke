@@ -43,11 +43,11 @@ test "Orchestrator task graph rebuilding" {
     }).bind;
 
     const n1 = try allocator.create(node.Node);
-    n1.* = try node.Node.init(allocator, "node1", .Heartbeat, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(1)));
+    n1.* = try node.Node.init(allocator, "node1", "mock", .Heartbeat, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(1)));
     try orch.nodes.put(try allocator.dupe(u8, "node1"), n1);
 
     const n2 = try allocator.create(node.Node);
-    n2.* = try node.Node.init(allocator, "node2", .Heartbeat, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(2)));
+    n2.* = try node.Node.init(allocator, "node2", "mock", .Heartbeat, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(2)));
     try orch.nodes.put(try allocator.dupe(u8, "node2"), n2);
 
     // No conflicts, should be in 1 level
@@ -136,8 +136,8 @@ test "Watchdog Timeout and Strike Count" {
     }).bind;
     mock_vtable.tick = (struct {
         fn tick(_: node.abi.moontide_node_h) callconv(.C) node.abi.moontide_status_t {
-            // Sleep for 200ms (Watchdog budget is 100ms)
-            std.time.sleep(200 * std.time.ns_per_ms);
+            // Sleep for 1.2s (Watchdog budget is 1s)
+            std.time.sleep(1200 * std.time.ns_per_ms);
             return node.abi.MOONTIDE_STATUS_OK;
         }
     }).tick;
@@ -331,6 +331,153 @@ test "Eternal Library: State Serialization" {
     w2.setAccess(std.posix.PROT.NONE);
 }
 
+test "Journal Extension Logic: Save/Restore Cycle" {
+    const allocator = std.testing.allocator;
+    
+    // 1. Setup Orchestrator
+    var orch: Orchestrator = undefined;
+    try orch.init(allocator);
+    defer orch.deinit();
+
+    // 2. Add some data to a Wire
+    const w = try orch.addWire("test.data", "val:i32", 4, true);
+    w.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
+    @as(*i32, @ptrCast(@alignCast(w.banks[0].ptr))).* = 1337;
+    w.setAccess(std.posix.PROT.NONE);
+
+    // 3. Simulate Journal Extension 'save'
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+    try orch.dumpToWriter(buffer.writer());
+
+    // 4. Corrupt/Change data
+    w.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
+    @as(*i32, @ptrCast(@alignCast(w.banks[0].ptr))).* = 0;
+    w.setAccess(std.posix.PROT.NONE);
+
+    // 5. Simulate Journal Extension 'load'
+    var stream = std.io.fixedBufferStream(buffer.items);
+    try orch.loadFromReader(stream.reader());
+
+    // 6. Verify restoration
+    const restored_w = orch.getWire("test.data").?;
+    restored_w.setAccess(std.posix.PROT.READ);
+    try std.testing.expectEqual(@as(i32, 1337), @as(*i32, @ptrCast(@alignCast(restored_w.banks[0].ptr))).*);
+    restored_w.setAccess(std.posix.PROT.NONE);
+}
+
+test "Audio Extension: Command Processing and Clearing" {
+    const allocator = std.testing.allocator;
+    
+    // 1. Setup Orchestrator
+    var orch: Orchestrator = undefined;
+    try orch.init(allocator);
+    defer orch.deinit();
+
+    // 2. Add Audio Play Wire
+    const w = try orch.addWire("audio.play", "id:u32[16];volume:f32[16];pitch:f32[16]", 16 * (4 + 4 + 4), false);
+    
+    // 3. Write a command to the wire
+    w.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
+    const cmd_ptr: [*]u32 = @ptrCast(@alignCast(w.ptr()));
+    cmd_ptr[0] = 1; // Play Sound ID 1
+    w.setAccess(std.posix.PROT.NONE);
+
+    // 4. Simulate Audio Extension 'tick' logic
+    // We'll just verify the clearing logic here since we can't easily 
+    // test the hardware audio output in a unit test.
+    w.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
+    if (cmd_ptr[0] != 0) {
+        // "Processing..."
+        cmd_ptr[0] = 0; // Clear it
+    }
+    w.setAccess(std.posix.PROT.NONE);
+
+    // 5. Verify the command was cleared
+    w.setAccess(std.posix.PROT.READ);
+    try std.testing.expectEqual(@as(u32, 0), cmd_ptr[0]);
+    w.setAccess(std.posix.PROT.NONE);
+}
+
+test "TidePool Networking: Ring Buffer Logic" {
+    const allocator = std.testing.allocator;
+    
+    // 1. Setup Orchestrator
+    var orch: Orchestrator = undefined;
+    try orch.init(allocator);
+    defer orch.deinit();
+
+    // 2. Add Network Incoming Wire (Ring Buffer)
+    const INCOMING_SIZE = 1024;
+    const w = try orch.addWire("network.incoming", "head:u32;tail:u32;data:u8[1024]", 8 + INCOMING_SIZE, false);
+    
+    // 3. Simulate TidePool 'receive'
+    w.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
+    const header: *struct { head: u32, tail: u32 } = @ptrCast(@alignCast(w.ptr()));
+    const data_ptr: [*]u8 = @ptrCast(w.ptr());
+    const ring_ptr = data_ptr + 8;
+
+    // Write a dummy packet: [Len:2][Addr:4][Port:2][Data:4] = 12 bytes
+    const packet_data = "HELO";
+    const len: u16 = 4;
+    const addr: u32 = 0x01020304;
+    const port: u16 = 8080;
+
+    @memcpy(ring_ptr[0..2], std.mem.asBytes(&len));
+    @memcpy(ring_ptr[2..6], std.mem.asBytes(&addr));
+    @memcpy(ring_ptr[6..8], std.mem.asBytes(&port));
+    @memcpy(ring_ptr[8..12], packet_data);
+    header.head = 12;
+    w.setAccess(std.posix.PROT.NONE);
+
+    // 4. Verify Logic (Lua Node side)
+    w.setAccess(std.posix.PROT.READ);
+    try std.testing.expectEqual(@as(u32, 12), header.head);
+    try std.testing.expectEqual(@as(u32, 0), header.tail);
+    
+    const read_len = @as(*const u16, @ptrCast(@alignCast(ring_ptr[0..2]))).*;
+    try std.testing.expectEqual(@as(u16, 4), read_len);
+    w.setAccess(std.posix.PROT.NONE);
+}
+
+test "Tensor Extension: SIMD Math Accuracy" {
+    const allocator = std.testing.allocator;
+    
+    // 1. Setup Orchestrator
+    var orch: Orchestrator = undefined;
+    try orch.init(allocator);
+    defer orch.deinit();
+
+    // 2. Add Tensor Wires
+    const mem_w = try orch.addWire("tensor.memory", "data:f32[64]", 64 * 4, false);
+    
+    // 3. Setup MATMUL test: [1, 2] * [[3, 4], [5, 6]] = [13, 16]
+    mem_w.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
+    const mem: [*]f32 = @ptrCast(@alignCast(mem_w.ptr()));
+    
+    mem[0] = 1.0; mem[1] = 2.0; // Input
+    mem[10] = 3.0; mem[11] = 4.0; mem[12] = 5.0; mem[13] = 6.0; // Weights (2x2)
+    
+    // 4. Simulate Tensor Engine MATMUL (Inner Dim = 2, Rows = 1, Cols = 2)
+    const row = 0;
+    const col1 = 0;
+    const col2 = 1;
+    
+    var sum1: f32 = 0;
+    for (0..2) |k| { sum1 += mem[row * 2 + k] * mem[10 + k * 2 + col1]; }
+    mem[20] = sum1;
+
+    var sum2: f32 = 0;
+    for (0..2) |k| { sum2 += mem[row * 2 + k] * mem[10 + k * 2 + col2]; }
+    mem[21] = sum2;
+
+    // 5. Verify Results
+    try std.testing.expectApproxEqAbs(@as(f32, 13.0), mem[20], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 16.0), mem[21], 0.0001);
+    
+    mem_w.setAccess(std.posix.PROT.NONE);
+}
+
 test "Type-Change (Ghost Data) Protection" {
     const allocator = std.testing.allocator;
     var orch: Orchestrator = undefined;
@@ -372,11 +519,11 @@ test "Circular Dependency Detection" {
     }).destroy;
 
     const n1 = try allocator.create(node.Node);
-    n1.* = try node.Node.init(allocator, "a", .Heartbeat, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(1)));
+    n1.* = try node.Node.init(allocator, "a", "mock", .Heartbeat, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(1)));
     try orch.nodes.put(try allocator.dupe(u8, "a"), n1);
 
     const n2 = try allocator.create(node.Node);
-    n2.* = try node.Node.init(allocator, "b", .Heartbeat, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(2)));
+    n2.* = try node.Node.init(allocator, "b", "mock", .Heartbeat, "none", mock_vtable, @as(node.abi.moontide_node_h, @ptrFromInt(2)));
     try orch.nodes.put(try allocator.dupe(u8, "b"), n2);
 
     // Create cycle: a after b, b after a

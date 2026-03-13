@@ -160,10 +160,16 @@ export fn add_trigger(handle: abi.moontide_node_h, event_name: [*c]const u8) abi
     return c.MOONTIDE_STATUS_OK;
 }
 
+export fn poll_events(handle: abi.moontide_node_h) bool {
+    _ = handle;
+    return true;
+}
+
 // --- ENTRY POINT ---
 
 export fn moontide_ext_init() abi.moontide_extension_t {
     return .{
+        .abi_version = abi.MOONTIDE_ABI_VERSION,
         .create_node = create_node,
         .destroy_node = destroy_node,
         .bind_wire = bind_wire,
@@ -173,5 +179,6 @@ export fn moontide_ext_init() abi.moontide_extension_t {
         .set_log_handler = set_log_handler,
         .set_poke_handler = set_poke_handler,
         .set_orchestrator_handler = set_orchestrator_handler,
+        .poll_events = poll_events,
     };
 }

@@ -127,6 +127,61 @@ pub fn CalculateSchemaSize(input: []const u8) usize {
     return total_size;
 }
 
+pub const RuntimeField = struct {
+    name: []const u8,
+    type_tag: TypeTag,
+    offset: usize,
+    size: usize,
+    array_count: usize,
+};
+
+pub const SchemaIterator = struct {
+    input: []const u8,
+    tokenizer: std.mem.TokenIterator(u8, .any),
+    current_offset: usize = 0,
+
+    pub fn init(input: []const u8) SchemaIterator {
+        return .{
+            .input = input,
+            .tokenizer = std.mem.tokenizeAny(u8, input, ";"),
+        };
+    }
+
+    pub fn next(self: *SchemaIterator) ?RuntimeField {
+        const entry = self.tokenizer.next() orelse return null;
+        var parts = std.mem.tokenizeAny(u8, entry, ":");
+        const name = parts.next() orelse return null;
+        const type_raw = parts.next() orelse return null;
+
+        var base_type = type_raw;
+        var count: usize = 1;
+        if (std.mem.indexOf(u8, type_raw, "[")) |idx| {
+            base_type = type_raw[0..idx];
+            const end = std.mem.indexOf(u8, type_raw, "]") orelse type_raw.len;
+            count = std.fmt.parseInt(usize, type_raw[idx + 1 .. end], 10) catch 1;
+        }
+
+        const tag: TypeTag = if (std.mem.eql(u8, base_type, "f32")) .f32
+        else if (std.mem.eql(u8, base_type, "f64")) .f64
+        else if (std.mem.eql(u8, base_type, "i32")) .i32
+        else if (std.mem.eql(u8, base_type, "u32")) .u32
+        else if (std.mem.eql(u8, base_type, "bool")) .bool
+        else .u32; // Default
+
+        const size = GetTypeSize(type_raw);
+        const field = RuntimeField{
+            .name = name,
+            .type_tag = tag,
+            .offset = self.current_offset,
+            .size = size,
+            .array_count = count,
+        };
+
+        self.current_offset += size;
+        return field;
+    }
+};
+
 pub fn generateCStruct(allocator: std.mem.Allocator, name: []const u8, schema_str: []const u8) ![]const u8 {
     var list = std.ArrayList(u8).init(allocator);
     try list.writer().print("typedef struct {{\n", .{});
@@ -178,5 +233,28 @@ test "generateCStruct" {
     try std.testing.expect(std.mem.indexOf(u8, c_struct, "int32_t count;") != null);
     try std.testing.expect(std.mem.indexOf(u8, c_struct, "float px[1000];") != null);
     try std.testing.expect(std.mem.indexOf(u8, c_struct, "} swarm_boids_t;") != null);
+}
+
+test "SchemaIterator: Precise Offset and Array Mapping" {
+    const input = "count:i32;pos:f32[3];active:bool";
+    var it = SchemaIterator.init(input);
+
+    // Field 1: count (i32, 4 bytes)
+    const f1 = it.next().?;
+    try std.testing.expectEqualStrings("count", f1.name);
+    try std.testing.expectEqual(@as(usize, 0), f1.offset);
+    try std.testing.expectEqual(TypeTag.i32, f1.type_tag);
+
+    // Field 2: pos (f32[3], 12 bytes)
+    const f2 = it.next().?;
+    try std.testing.expectEqualStrings("pos", f2.name);
+    try std.testing.expectEqual(@as(usize, 4), f2.offset); // Starts after i32
+    try std.testing.expectEqual(@as(usize, 12), f2.size);
+    try std.testing.expectEqual(@as(usize, 3), f2.array_count);
+
+    // Field 3: active (bool, 1 byte)
+    const f3 = it.next().?;
+    try std.testing.expectEqual(@as(usize, 16), f3.offset); // Starts after 4 + 12
+    try std.testing.expectEqual(TypeTag.bool, f3.type_tag);
 }
 

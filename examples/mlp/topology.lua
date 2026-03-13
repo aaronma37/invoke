@@ -2,12 +2,12 @@ return {
   namespaces = {
     ai = {
       wires = {
-        brain = {
-            schema = "w1:f32[8];w2:f32[4];b1:f32[4];b2:f32[1]",
+        ["tensor.commands"] = {
+            schema = "data:u32[224]", -- 32 commands * 7 u32s each
             buffered = false
         },
-        layers = {
-            schema = "input:f32[2];hidden:f32[4];output:f32[1]",
+        ["tensor.memory"] = {
+            schema = "data:f32[1024]",
             buffered = false
         },
         stats = {
@@ -21,8 +21,16 @@ return {
           type = "luajit",
           mode = "Heartbeat",
           script = "examples/mlp/trainer.lua",
-          reads = {"brain", "layers", "stats"},
-          writes = {"brain", "layers", "stats"}
+          reads = {"tensor.memory", "stats"},
+          writes = {"tensor.commands", "tensor.memory", "stats"}
+        },
+        {
+          name = "tensor_engine",
+          type = "tensor",
+          mode = "Heartbeat",
+          script = "none",
+          reads = {"tensor.commands", "tensor.memory"},
+          writes = {"tensor.commands", "tensor.memory"}
         }
       }
     }

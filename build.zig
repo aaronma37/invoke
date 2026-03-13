@@ -99,6 +99,158 @@ pub fn build(b: *std.Build) void {
     });
     b.getInstallStep().dependOn(&hud_install.step);
 
+    // 4.5 JOURNAL (PERSISTENCE) EXTENSION
+    const journal_ext = b.addSharedLibrary(.{
+        .name = "journal_ext",
+        .root_source_file = b.path("extensions/journal/journal_ext.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    journal_ext.linkLibC();
+    journal_ext.addIncludePath(b.path("sdk"));
+    journal_ext.root_module.addImport("core", core_mod);
+
+    const journal_install = b.addInstallArtifact(journal_ext, .{
+        .dest_dir = .{ .override = .{ .custom = "../ext" } },
+    });
+    b.getInstallStep().dependOn(&journal_install.step);
+
+    // 4.6 AUDIO (MINIAUDIO) EXTENSION
+    const audio_ext = b.addSharedLibrary(.{
+        .name = "audio_ext",
+        .root_source_file = b.path("extensions/audio/miniaudio_ext.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    audio_ext.linkLibC();
+    audio_ext.addIncludePath(b.path("sdk"));
+    audio_ext.addIncludePath(b.path("ext/miniaudio"));
+    audio_ext.addCSourceFile(.{ .file = b.path("extensions/audio/miniaudio_impl.c"), .flags = &.{} });
+    audio_ext.linkSystemLibrary("m");
+    audio_ext.linkSystemLibrary("dl");
+    audio_ext.linkSystemLibrary("pthread");
+    audio_ext.root_module.addImport("core", core_mod);
+
+    const audio_install = b.addInstallArtifact(audio_ext, .{
+        .dest_dir = .{ .override = .{ .custom = "../ext" } },
+    });
+    b.getInstallStep().dependOn(&audio_install.step);
+
+    // 4.7 NETWORK (TIDEPOOL) EXTENSION
+    const network_ext = b.addSharedLibrary(.{
+        .name = "network_ext",
+        .root_source_file = b.path("extensions/network/tide_pool_ext.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    network_ext.linkLibC();
+    network_ext.addIncludePath(b.path("sdk"));
+    network_ext.root_module.addImport("core", core_mod);
+
+    const network_install = b.addInstallArtifact(network_ext, .{
+        .dest_dir = .{ .override = .{ .custom = "../ext" } },
+    });
+    b.getInstallStep().dependOn(&network_install.step);
+
+    // 4.8 INSPECTOR (MOTHERBOARD UI) EXTENSION
+    const inspector_ext = b.addSharedLibrary(.{
+        .name = "inspector_ext",
+        .root_source_file = b.path("extensions/inspector/inspector_ext.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    inspector_ext.linkLibC();
+    inspector_ext.addIncludePath(b.path("sdk"));
+    inspector_ext.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
+    inspector_ext.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
+    inspector_ext.linkSystemLibrary("raylib");
+    inspector_ext.linkSystemLibrary("GL");
+    inspector_ext.linkSystemLibrary("m");
+    inspector_ext.linkSystemLibrary("pthread");
+    inspector_ext.linkSystemLibrary("dl");
+    inspector_ext.linkSystemLibrary("rt");
+    inspector_ext.linkSystemLibrary("X11");
+    inspector_ext.root_module.addImport("core", core_mod);
+
+    const inspector_install = b.addInstallArtifact(inspector_ext, .{
+        .dest_dir = .{ .override = .{ .custom = "../ext" } },
+    });
+    b.getInstallStep().dependOn(&inspector_install.step);
+
+    // 4.9 TENSOR (SOTA SIMD) EXTENSION
+    const tensor_ext = b.addSharedLibrary(.{
+        .name = "tensor_ext",
+        .root_source_file = b.path("extensions/tensor/tensor_ext.zig"),
+        .target = target,
+        .optimize = optimize, // Usually you want ReleaseFast for this, but using 'optimize' for consistency
+    });
+    tensor_ext.linkLibC();
+    tensor_ext.addIncludePath(b.path("sdk"));
+    tensor_ext.root_module.addImport("core", core_mod);
+
+    const tensor_install = b.addInstallArtifact(tensor_ext, .{
+        .dest_dir = .{ .override = .{ .custom = "../ext" } },
+    });
+    b.getInstallStep().dependOn(&tensor_install.step);
+
+    // 4.10 PYTHON (SOTA ECOSYSTEM) EXTENSION
+    const python_ext = b.addSharedLibrary(.{
+        .name = "python_ext",
+        .root_source_file = b.path("extensions/python/python_ext.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    python_ext.linkLibC();
+    python_ext.addIncludePath(b.path("sdk"));
+    python_ext.addIncludePath(.{ .cwd_relative = "/usr/include/python3.12" });
+    python_ext.addLibraryPath(.{ .cwd_relative = "/usr/lib/python3.12/config-3.12-x86_64-linux-gnu" });
+    python_ext.linkSystemLibrary("python3.12");
+    python_ext.root_module.addImport("core", core_mod);
+
+    const python_install = b.addInstallArtifact(python_ext, .{
+        .dest_dir = .{ .override = .{ .custom = "../ext" } },
+    });
+    b.getInstallStep().dependOn(&python_install.step);
+
+    // 4.11 SQLITE (DATA INTELLIGENCE) EXTENSION
+    const sqlite_ext = b.addSharedLibrary(.{
+        .name = "sqlite_ext",
+        .root_source_file = b.path("extensions/sqlite/sqlite_ext.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sqlite_ext.linkLibC();
+    sqlite_ext.addIncludePath(b.path("sdk"));
+    sqlite_ext.linkSystemLibrary("sqlite3");
+    sqlite_ext.root_module.addImport("core", core_mod);
+
+    const sqlite_install = b.addInstallArtifact(sqlite_ext, .{
+        .dest_dir = .{ .override = .{ .custom = "../ext" } },
+    });
+    b.getInstallStep().dependOn(&sqlite_install.step);
+
+    // 4.12 WEBGPU (MASSIVE SWARM) EXTENSION
+    const webgpu_ext = b.addSharedLibrary(.{
+        .name = "webgpu_ext",
+        .root_source_file = b.path("extensions/webgpu/webgpu_ext.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    webgpu_ext.linkLibC();
+    webgpu_ext.addIncludePath(b.path("sdk"));
+    webgpu_ext.addIncludePath(b.path("ext/wgpu"));
+    webgpu_ext.addLibraryPath(b.path("ext/wgpu"));
+    webgpu_ext.linkSystemLibrary("wgpu_native");
+    webgpu_ext.linkSystemLibrary("m");
+    webgpu_ext.linkSystemLibrary("dl");
+    webgpu_ext.linkSystemLibrary("pthread");
+    webgpu_ext.root_module.addImport("core", core_mod);
+
+    const webgpu_install = b.addInstallArtifact(webgpu_ext, .{
+        .dest_dir = .{ .override = .{ .custom = "../ext" } },
+    });
+    b.getInstallStep().dependOn(&webgpu_install.step);
+
     // 5. RUN COMMAND
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

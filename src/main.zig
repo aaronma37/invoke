@@ -53,6 +53,9 @@ pub fn main() !void {
         } else {
             printUsage();
         }
+    } else if (std.mem.eql(u8, command, "bundle")) {
+        const topo_path = if (args.len > 2) args[2] else "topology.lua";
+        try cmdBundle(allocator, topo_path);
     } else if (std.mem.eql(u8, command, "version")) {
         std.debug.print("Moontide Kernel v0.5.0 (Lua-Config Edition)\n", .{});
         std.debug.print("Silicon ABI v{d}\n", .{node.abi.MOONTIDE_ABI_VERSION});
@@ -68,12 +71,68 @@ fn printUsage() void {
         \\Usage:
         \\  moontide run [topology.lua]   Boot the pure silicon kernel
         \\  moontide init                Scaffold a new Moontide project
+        \\  moontide bundle [topo.lua]   Package kernel + extensions + scripts for distribution
         \\  moontide save [path.tide]    Dump current silicon state to disk (placeholder)
         \\  moontide load [path.tide]    Restore silicon state from disk (placeholder)
         \\  moontide sdk install         Install SDK headers and runtimes globally
         \\  moontide version             Display version info
         \\
     , .{});
+}
+
+fn cmdBundle(allocator: std.mem.Allocator, topo_path: []const u8) !void {
+    std.debug.print("[Bundle] Packaging Moontide Application for distribution...\n", .{});
+    
+    const dist_dir = "dist";
+    std.fs.cwd().makePath(dist_dir) catch |err| {
+        if (err != error.PathAlreadyExists) return err;
+    };
+
+    // 1. Copy Kernel
+    const kernel_src = "zig-out/bin/moontide";
+    const kernel_dst = "dist/moontide";
+    std.debug.print("  -> Copying Kernel: {s}\n", .{kernel_src});
+    try std.fs.cwd().copyFile(kernel_src, std.fs.cwd(), kernel_dst, .{});
+
+    // 2. Create sub-dirs
+    try std.fs.cwd().makePath("dist/ext");
+    try std.fs.cwd().makePath("dist/gen");
+
+    // 3. Simple static copy of all .so and .lua for now
+    // (A SOTA version would parse the topology to find ONLY used files)
+    
+    var ext_dir = try std.fs.cwd().openDir("ext", .{ .iterate = true });
+    defer ext_dir.close();
+    var it = ext_dir.iterate();
+    while (try it.next()) |entry| {
+        if (std.mem.endsWith(u8, entry.name, ".so")) {
+            std.debug.print("  -> Copying Extension: {s}\n", .{entry.name});
+            const dst_path = try std.fs.path.join(allocator, &.{ "dist/ext", entry.name });
+            defer allocator.free(dst_path);
+            try ext_dir.copyFile(entry.name, std.fs.cwd(), dst_path, .{});
+        }
+    }
+
+    // 4. Copy Topology
+    std.debug.print("  -> Copying Topology: {s}\n", .{topo_path});
+    try std.fs.cwd().copyFile(topo_path, std.fs.cwd(), "dist/topology.lua", .{});
+
+    // 5. Create run script
+    const run_sh = 
+        \\#!/bin/bash
+        \\export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:./ext
+        \\./moontide run topology.lua
+    ;
+    try std.fs.cwd().writeFile(.{ .sub_path = "dist/run.sh", .data = run_sh });
+    
+    // Set executable bit
+    const run_file = try std.fs.cwd().openFile("dist/run.sh", .{});
+    defer run_file.close();
+    // try run_file.chmod(0o755); // Zig 0.11+ way or use system
+    _ = std.os.linux.chmod("dist/run.sh", 0o755);
+
+    std.debug.print("\n[Bundle] SUCCESS! Application packaged in './dist/'.\n", .{});
+    std.debug.print("         To run: cd dist && ./run.sh\n", .{});
 }
 
 fn cmdSave(allocator: std.mem.Allocator, path: []const u8) !void {

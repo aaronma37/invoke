@@ -34,11 +34,15 @@ pub const Extension = struct {
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8) !*Extension {
+        std.debug.print("[Extension] Attempting to dlopen: {s}\n", .{path});
         var self = try allocator.create(Extension);
         self.allocator = allocator;
         
         // 1. Load the shared library
-        self.lib = try std.DynLib.open(path);
+        self.lib = std.DynLib.open(path) catch |err| {
+            std.debug.print("[Extension] dlopen failed for {s}: {any}\n", .{path, err});
+            return err;
+        };
         
         // 2. Look up the entry point
         const init_fn = self.lib.lookup(node.abi.moontide_ext_init_fn, "moontide_ext_init") 
@@ -46,6 +50,14 @@ pub const Extension = struct {
             
         // 3. Get the VTable (The Handshake)
         self.vtable = init_fn.?();
+        
+        // --- ABI VERSION GUARD ---
+        if (self.vtable.abi_version != node.abi.MOONTIDE_ABI_VERSION) {
+            std.debug.print("[ExtensionManager] FATAL: Extension '{s}' ABI mismatch (Found {d}, Kernel expects {d})\n", .{ path, self.vtable.abi_version, node.abi.MOONTIDE_ABI_VERSION });
+            self.lib.close();
+            self.allocator.destroy(self);
+            return error.AbiVersionMismatch;
+        }
         
         // 4. Inject Host Services (v1.1)
         if (self.vtable.set_log_handler) |set_log| {
@@ -92,6 +104,10 @@ pub const ExtensionManager = struct {
     pub fn getOrLoad(self: *ExtensionManager, ext_type: []const u8) !*Extension {
         if (self.extensions.get(ext_type)) |ext| return ext;
 
+        const cwd = std.fs.cwd().realpathAlloc(self.allocator, ".") catch "???";
+        defer if (!std.mem.eql(u8, cwd, "???")) self.allocator.free(cwd);
+        std.debug.print("[ExtensionManager] CWD: {s}\n", .{cwd});
+
         const lib_name = try std.fmt.allocPrint(self.allocator, "lib{s}_ext.so", .{ext_type});
         defer self.allocator.free(lib_name);
 
@@ -106,26 +122,40 @@ pub const ExtensionManager = struct {
         };
 
         for (paths) |base_path| {
-            const full_path = try std.fs.path.join(self.allocator, &.{ base_path, lib_name });
+            const relative_path = try std.fs.path.join(self.allocator, &.{ base_path, lib_name });
+            defer self.allocator.free(relative_path);
+
+            const full_path = std.fs.cwd().realpathAlloc(self.allocator, relative_path) catch {
+                // std.debug.print("[ExtensionManager] File not found: {s}\n", .{relative_path});
+                continue;
+            };
             defer self.allocator.free(full_path);
+
+            std.debug.print("[ExtensionManager] Resolved: {s}\n", .{full_path});
 
             if (Extension.init(self.allocator, full_path)) |ext| {
                 try self.extensions.put(try self.allocator.dupe(u8, ext_type), ext);
                 std.debug.print("[ExtensionManager] Loaded Runtime: {s} (from {s})\n", .{ ext_type, base_path });
                 return ext;
-            } else |_| {
+            } else |err| {
+                std.debug.print("[ExtensionManager] DEBUG: Failed to load '{s}': {any}\n", .{ full_path, err });
                 continue;
             }
         }
-
-        // Try User Global if HOME is set
+        
+        // Try User Global
         const home_env = std.process.getEnvVarOwned(self.allocator, "HOME") catch null;
         if (home_env) |home| {
             defer self.allocator.free(home);
-            const user_path = try std.fs.path.join(self.allocator, &.{ home, ".local/lib/moontide/ext/" });
-            defer self.allocator.free(user_path);
+            const user_base = try std.fs.path.join(self.allocator, &.{ home, ".local/lib/moontide/ext/" });
+            defer self.allocator.free(user_base);
             
-            const full_path = try std.fs.path.join(self.allocator, &.{ user_path, lib_name });
+            const relative_path = try std.fs.path.join(self.allocator, &.{ user_base, lib_name });
+            defer self.allocator.free(relative_path);
+
+            const full_path = std.fs.cwd().realpathAlloc(self.allocator, relative_path) catch {
+                return error.ExtensionNotFound;
+            };
             defer self.allocator.free(full_path);
 
             if (Extension.init(self.allocator, full_path)) |ext| {

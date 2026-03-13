@@ -206,6 +206,7 @@ export fn set_poke_handler(handler: abi.moontide_poke_fn) void { _ = handler; }
 
 export fn moontide_ext_init() abi.moontide_extension_t {
     return .{
+        .abi_version = abi.MOONTIDE_ABI_VERSION,
         .create_node = create_node,
         .destroy_node = destroy_node,
         .bind_wire = bind_wire,

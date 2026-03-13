@@ -43,6 +43,8 @@ typedef void (*moontide_poke_fn)(const char* event_name);
  * Function pointers that the Extension MUST export for the Kernel to use.
  */
 typedef struct {
+    uint32_t abi_version; // Must match MOONTIDE_ABI_VERSION
+
     // 1. Lifecycle
     moontide_node_h (*create_node)(const char* name, const char* script_path);
     void (*destroy_node)(moontide_node_h node);

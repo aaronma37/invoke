@@ -1,0 +1,6 @@
+[submodule "examples/block_roguelike/ext/mooncrust"]
+	path = examples/block_roguelike/ext/mooncrust
+	url = https://github.com/aaronma37/MoonCrust
+[submodule "projects/block-roguelike/ext/mooncrust"]
+	path = projects/block-roguelike/ext/mooncrust
+	url = https://github.com/aaronma37/MoonCrust
