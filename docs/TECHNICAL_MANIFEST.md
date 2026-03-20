@@ -1,37 +1,37 @@
-# The Moontide Neural Technical Manifest
+# The Moontide KAN Technical Manifest
 
-**Moontide Neural** is a high-performance runtime for neuromorphic intelligence, separating "Silicon" (Zig host) from "The Liquid" (Neural state).
+**Moontide** is a high-performance runtime for Kolmogorov-Arnold Networks (KAN), separating "Silicon" (Zig host) from "The Grid" (Spline state).
 
-## 1. The Pulse Oscillator (Zig Kernel)
-The core kernel is no longer a general-purpose scheduler. It is a **Synchronicity Engine.**
-*   **Pure Silicon:** Zero dependencies on `lua.h`.
-*   **Synchronous Pulse Scheduling:** Replaces the DAG with fixed-frequency "Clock Domains" for synchronous neuronal updates.
-*   **Silicon Armor:** Enforces memory protection on Synaptic Wires using `mprotect`.
-*   **The Socket (moontide_abi.h):** A permanent C-ABI contract for Pulse and Learning extensions.
+## 1. The Spline Kernel (Zig Core)
+The core kernel is a **High-Precision Evaluator.**
+*   **Vectorized Cox-de Boor:** Evaluating cubic B-splines using **AVX-512** for 16 simultaneous coordinates.
+*   **Analytical Backpropagation:** Hardcoded spatial and coefficient gradients for the training loop, eliminating the overhead of dynamic computation graphs.
+*   **Silicon Armor:** Enforces memory protection on Spline Grids using `mprotect`.
+*   **The Socket (moontide_abi.h):** A permanent C-ABI contract for KAN evaluation and training extensions.
 
-## 2. Eternal Synaptic Fabric (Wires)
-State lives on raw, page-aligned memory buffers that persist across logic reloads.
-*   **Double-Buffer Pulse:** Wires are "Banks" (Front/Back). Reads come from Front (Time $T$); Writes go to Back (Time $T+1$). The Kernel performs a Pointer Swap at the end of the Pulse.
-*   **Sparse Connections:** Supports Indirection Tables for non-contiguous synaptic connectivity between neurons.
-*   **Gather-Scatter Optimized:** Specifically designed to leverage the **AVX-512** path on Zen 5 hardware.
+## 2. Eternal Spline Grids (Wires)
+State lives on raw, page-aligned memory buffers (Wires) that persist across logic reloads.
+*   **Double-Buffer Training:** Grids are "Banks" (Front/Back). Reads come from Front (Model $T$); Updates go to Back (Model $T+1$). The Kernel performs a Pointer Swap after the Adam update step.
+*   **Knot Vectors:** Trainable or fixed knot vectors define the resolution and distribution of spline power.
+*   **Gather-Scatter Optimized:** Specifically designed to leverage the **AVX-512** path on Zen 5 hardware for non-contiguous coefficient lookups.
 
-## 3. Ephemeral Neural Logic (Nodes)
-Brain behavior is isolated into "pluggable" sockets.
-*   **The Inference Node:** Executes high-speed, leaky integrate-and-fire math. 
-*   **The Learning Node:** Executes background plasticity algorithms (STDP) without disrupting the inference heartbeat.
+## 3. Geometric Logic (KAN Nodes)
+Network behavior is isolated into "pluggable" sockets.
+*   **The SDF Node:** Predicts a 3D distance field and its spatial gradient ($\nabla SDF$) for Eikonal enforcement.
+*   **The Material Node:** Predicts PBR attributes (R, G, B, Roughness, Metallic) with surface-weighted priority.
 
 ## 4. Hardware-Aware Concurrency
-Moontide Neural is "Silicon-Aware" for the 9950X:
+Moontide is "Silicon-Aware" for the 9950X:
 *   **CCD Pinning:** Threads are manually affinity-pinned to specific chiplets to maximize L3 cache hits.
-*   **Infinity Fabric Bypass:** Data flow between neurons is kept local to a CCD whenever possible to eliminate the cross-chiplet latency bottleneck.
+*   **Infinity Fabric Bypass:** Data flow within a KAN (inputs to outputs) is kept local to a CCD whenever possible to eliminate the cross-chiplet latency bottleneck.
 
-## 5. Summary of the Neural Stack
+## 5. Summary of the KAN Stack
 | Aspect | Mechanism |
 | :--- | :--- |
-| **Synchrony** | Synchronous Pulse Scheduling replaces DAG dependency sorting. |
-| **Performance** | Native AVX-512 "Gather/Scatter" for sparse neural graphs. |
-| **Reliability** | Hardware-level memory protection for every synaptic connection. |
-| **Scalability** | Asynchronous plasticity (STDP) running on background cores. |
+| **Continuity** | B-Splines replace discrete weights for infinite resolution. |
+| **Performance** | Native AVX-512 "Gather/Scatter" for sparse KAN graphs. |
+| **Reliability** | Hardware-level memory protection for every spline coefficient. |
+| **Training** | Analytical Eikonal loss and Grid Extension (Upscaling). |
 
 ---
-*The goal is bit-perfect, deterministic neuromorphic intelligence at the raw speed of the silicon gates.*
+*The goal is bit-perfect, deterministic geometric parameterization at the raw speed of the silicon gates.*

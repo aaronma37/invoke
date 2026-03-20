@@ -1,16 +1,23 @@
 # Moontide Changelog
 
-## [v0.8.0] - The "Deep Water" Update (PHASE 5 ROADMAP)
+## [v0.9.0] - The "Geometric Pivot" (CURRENT FOCUS)
+*“Beyond the Pulse: The Continuous Revolution.”*
+
+### 🚀 Major Architectural Shifts
+1.  **Total Pivot to KAN:** Abandoned Spiking Neural Networks (SNN) and Liquid State Machines (LSM). Moontide is now a high-performance Kolmogorov-Arnold Network (KAN) trainer.
+2.  **AVX-512 B-Spline Kernel:** Implemented the Cox-de Boor algorithm in Zig, enabling 16-way SIMD evaluation of cubic splines.
+3.  **Analytical Backpropagation:** Hardcoded the derivative of B-splines w.r.t coefficients and inputs for zero-allocation training loops.
+4.  **Eikonal Enforcement:** Added a dedicated loss module to enforce $||\nabla SDF|| = 1.0$, ensuring mathematically perfect distance fields.
+5.  **Multi-Resolution Scaling:** Implemented "Grid Extension" to dynamically upscale spline resolution during training.
+
+---
+
+## [v0.8.0] - The "Deep Water" Update (DEPRECATED)
 *“Beyond the Single Host: Global Scaling.”*
 
-### 🚀 Planned Architectural Shifts
+### 🚀 Planned Architectural Shifts (Cancelled in favor of v0.9.0)
 1.  **"Tide-Pool" Network Extension:** A dedicated I/O socket that manages thousands of concurrent connections and pours packets into Ring Buffer Wires.
 2.  **Level Journaling (Persistence):** Background streaming of Wire back-buffers to persistent storage without blocking the Heartbeat.
-3.  **Cell Partitioning (Dynamic Sub-Graphs):** The ability to spin up independent sub-kernels for different game zones that communicate via Gateway Wires.
-4.  Dynamic Topology API (`moontide.load_topology`):** Allow logic nodes to trigger the loading of sub-graph blueprints for seamless level transitions.
-5.  **Batch Tick Mode:** A high-speed execution mode that runs a specific number of frames (or until a condition is met) as fast as possible for MCTS rollouts and Monte Carlo simulations.
-6.  **CLI `bundle` Command:** One-click packaging of the Moontide kernel, extensions, and assets into a standalone distribution.
-
 
 ---
 
