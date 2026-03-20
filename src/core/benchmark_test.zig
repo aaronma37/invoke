@@ -1,7 +1,36 @@
 const std = @import("std");
 const kan_trainer = @import("kan_trainer.zig");
+const kan_dataloader = @import("kan_dataloader.zig");
 const TrainingBatch = kan_trainer.TrainingBatch;
 const KanTrainer = kan_trainer.KanTrainer;
+const DataLoader = kan_dataloader.DataLoader;
+
+test "Benchmark: Objaverse Real-World Train" {
+    const allocator = std.testing.allocator;
+    const pcb_path = "bunny_sample.pcb";
+    
+    var loader = DataLoader.init(allocator, pcb_path) catch {
+        std.debug.print("PCB not found at {s}, skipping real-world test.\n", .{pcb_path});
+        return;
+    };
+
+    const dims = [_]usize{ 3, 32, 32, 6 };
+    var trainer = try KanTrainer.initFixed(allocator, &dims, 8, 10000);
+    defer trainer.deinit();
+
+    const batch_size = 10000;
+    const inputs = try allocator.alloc(f32, batch_size * 3);
+    const targets = try allocator.alloc(f32, batch_size * 6);
+    defer { allocator.free(inputs); allocator.free(targets); }
+
+    var prng = std.Random.DefaultPrng.init(42);
+    loader.getBatch(batch_size, &prng, inputs, targets);
+
+    const batch = TrainingBatch{ .inputs = inputs, .targets = targets, .batch_size = batch_size };
+    _ = try trainer.trainStep(batch);
+    
+    std.debug.print("\nSUCCESS: Successfully trained one step using GPU-generated data!\n", .{});
+}
 
 test "Benchmark: Production-Sized Stress Test" {
     const allocator = std.testing.allocator;

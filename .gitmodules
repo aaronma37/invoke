@@ -4,3 +4,7 @@
 [submodule "projects/block-roguelike/ext/mooncrust"]
 	path = projects/block-roguelike/ext/mooncrust
 	url = https://github.com/aaronma37/MoonCrust
+[submodule "extensions/mooncrust"]
+	path = extensions/mooncrust
+	url = git@github.com:aaronma37/MoonCrust.git
+	branch = virtualbones

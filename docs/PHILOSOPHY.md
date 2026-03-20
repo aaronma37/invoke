@@ -2,36 +2,28 @@
 
 **Moontide** is a fundamental rejection of the "Discrete Matrix" AI world. It is a high-precision, continuous-parameterization engine designed for the era of **Neurosymbolic Geometry.**
 
-## I. The Core: "Spline Sculpting"
-The Moontide Kernel is no longer a general-purpose DAG runner. It is a **Geometric Compiler.**
-*   **The Responsibility:** It manages **Grids (The Topology)** and **Splines (The Activation).**
-*   **Strict Isolation:** The Kernel treats all KAN nodes as continuous mathematical transformations. It enforces bit-perfect consistency through analytical gradients.
-*   **The Benefit:** It turns a consumer laptop into a high-performance training workstation capable of fitting complex 3D volumes into minimal spline coefficients.
+## I. The Core: "Silicon Sculpting"
+The Moontide Kernel is a **Geometric Compiler.** 
+*   **The Shift:** We move from "Weights" to "Curves." Geometry is not a set of vertices; it is a mathematical field stored in the coefficients of B-splines.
+*   **Direct Execution:** The CPU does not "simulate" a model; it "executes" geometry. By unrolling the math into branchless polynomials, we turn the 9950X into a dedicated geometric ALU.
 
-## II. The Standard: "Continuous Representation"
-While traditional 3D is "Discrete" (using millions of triangles or voxels), Moontide is **"Inherently Continuous."**
-*   **Shape in the Curves:** Geometry is not a set of vertices; it is a mathematical field stored in the coefficients of B-splines.
-*   **Infinite Resolution:** Because the representation is a function $f(X, Y, Z)$, you can query the surface at any level of detail without ever seeing a polygon edge.
+## II. The Standard: "Infinite Continuity"
+Traditional 3D is "Discrete" (triangles/voxels). Moontide is **"Inherently Continuous."**
+*   **Infinite Resolution:** Because the representation is a function $f(X, Y, Z)$, you can query the surface at any level of detail. 
+*   **Mathematical Physics:** We enforce Physicality through the **Eikonal Loss.** A Moontide model doesn't just look like a shape; it behaves like a true distance field, with perfect gradients for lighting and physics.
 
-## III. The Workflow: "Grid Evolution"
-Moontide is designed for a world where geometry is modeled after continuous signals.
-*   **Coarse Training (Fast):** Learning the basic volumetric shape using low-resolution spline grids.
-*   **Fine Training (Precise):** Dynamically doubling the grid density (Grid Extension) to capture high-frequency details (pores, fabric, rivets) in the final training passes.
-*   **Sparsification:** Pruning unnecessary edges and coefficients to reach the mathematical limit of geometric compression.
+## III. The Workflow: "Evolutionary Training"
+Moontide follows the **Multi-Resolution Path.**
+*   **Stabilize Coarse:** Learn the basic volumetric silhouette on sparse grids.
+*   **Evolve Fine:** Dynamically double grid density (Grid Extension) to capture high-frequency pores, rivets, and fabric weave without retraining.
+*   **Sparsify:** Prune unused spline paths to reach the mathematical limit of compression.
 
-## IV. The Concurrency: "Segmented Training"
+## IV. The Concurrency: "Zero-Copy Parallelism"
 We reject monolithic training in favor of **Modular KANs.**
-*   **Modular Training:** Each body part (arm, torso, armor plate) is trained as a separate, specialized KAN.
-*   **Shared Silicon:** All threads are pinned to specific CCDs on the 9950X to ensure that the entire spline grid fits within the L3 cache, eliminating the cross-chiplet latency bottleneck.
-
-## V. Summary of the "Geometric Handshake"
-| Component | Responsibility | Knowledge of Logic | Knowledge of Data |
-| :--- | :--- | :--- | :--- |
-| **Kernel** | Spline Compiler (Silicon) | No (Strict Isolation) | Yes (Knot Vectors) |
-| **Grid** | The Grid (Wire) | No (Pure Memory) | Yes (Coefficients) |
-| **KAN Node** | The Curve (Logic) | Internal Only | Indirect (via B-splines) |
+*   **Isolated Synthesis:** Each thread works on a subset of the batch with private memory.
+*   **Cache Locality:** By keeping models small and batches localized, we ensure the entire training process happens within the 64MB L3 cache of the Zen 5 CCD.
 
 ---
 
 ## The Core Mantra: Logic is the Spline, Data is the Grid.
-In Moontide, the "Pixel" is dead. State lives in the **Spline Grid** (Continuous), and behavior lives in the **Analytical Activation** (Mathematical). This separation enables a scale of geometric precision and data density that discrete-time systems cannot achieve.
+In Moontide, the "Vertex" is dead. State lives in the **Spline Grid** (Continuous), and behavior lives in the **Analytical Activation** (Mathematical). This separation enables a scale of geometric precision and data density that discrete-time systems cannot achieve.

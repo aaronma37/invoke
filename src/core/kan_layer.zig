@@ -211,6 +211,53 @@ pub const KanLayer = struct {
             }
         }
     }
+
+    /// Extends the grid resolution by doubling the number of coefficients.
+    /// This allows coarse-to-fine training.
+    pub fn extendGrid(self: *KanLayer, allocator: mem.Allocator) !void {
+        const old_num_coeffs = self.num_coeffs;
+        const new_num_coeffs = old_num_coeffs * 2;
+        const out_dim = self.out_dim;
+        const in_dim = self.in_dim;
+        const p = kan_spline.SplineConfig.Order;
+
+        // 1. Allocate new shared knots
+        const num_new_knots = new_num_coeffs + p + 1;
+        const new_knots = try allocator.alloc(f32, num_new_knots);
+        errdefer allocator.free(new_knots);
+        for (new_knots, 0..) |*k, i| {
+            k.* = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(num_new_knots - 1));
+        }
+
+        // 2. Allocate new flat SoA coefficients
+        const new_coeffs = try allocator.alignedAlloc(f32, kan_spline.SplineConfig.Alignment, in_dim * new_num_coeffs * out_dim);
+        errdefer allocator.free(new_coeffs);
+        @memset(new_coeffs, 0.0);
+
+        // 3. Project old coefficients to new coefficients (Linear Interpolation for now)
+        // This is a simplified "Knot Insertion" that preserves the general curve.
+        for (0..in_dim) |i| {
+            for (0..new_num_coeffs) |k_new| {
+                const old_idx_f = (@as(f32, @floatFromInt(k_new)) / @as(f32, @floatFromInt(new_num_coeffs - 1))) * @as(f32, @floatFromInt(old_num_coeffs - 1));
+                const idx_low = @as(usize, @intFromFloat(@floor(old_idx_f)));
+                const idx_high = @as(usize, @intFromFloat(@ceil(old_idx_f)));
+                const t = old_idx_f - @as(f32, @floatFromInt(idx_low));
+
+                for (0..out_dim) |j| {
+                    const val_low = self.coeffs[(i * old_num_coeffs + idx_low) * out_dim + j];
+                    const val_high = self.coeffs[(i * old_num_coeffs + idx_high) * out_dim + j];
+                    new_coeffs[(i * new_num_coeffs + k_new) * out_dim + j] = val_low * (1.0 - t) + val_high * t;
+                }
+            }
+        }
+
+        // 4. Hot-swap buffers
+        allocator.free(self.coeffs);
+        allocator.free(self.knots);
+        self.coeffs = new_coeffs;
+        self.knots = new_knots;
+        self.num_coeffs = new_num_coeffs;
+    }
 };
 
 test "KanLayer SoA: Basic Forward" {
@@ -225,4 +272,34 @@ test "KanLayer SoA: Basic Forward" {
     layer.forward(&inputs, outputs, 1);
     const silu_05 = 0.5 / (1.0 + @exp(-0.5));
     try std.testing.expectApproxEqRel(silu_05 * 2.0, outputs[0], 1e-5);
+}
+
+test "KanLayer SoA: Grid Extension Identity" {
+    const allocator = std.testing.allocator;
+    var layer = try KanLayer.init(allocator, 2, 4, 4);
+    defer layer.deinit();
+
+    // Set some non-zero coefficients
+    for (layer.coeffs, 0..) |*c, i| {
+        c.* = @as(f32, @floatFromInt(i)) * 0.01;
+    }
+
+    const inputs = [_]f32{ 0.3, 0.7 };
+    const outputs_before = try allocator.alloc(f32, 4);
+    defer allocator.free(outputs_before);
+    layer.forward(&inputs, outputs_before, 1);
+
+    // Double the resolution
+    try layer.extendGrid(allocator);
+
+    const outputs_after = try allocator.alloc(f32, 4);
+    defer allocator.free(outputs_after);
+    layer.forward(&inputs, outputs_after, 1);
+
+    // Verify identity (within reasonable tolerance for linear interpolation)
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(outputs_before[i], outputs_after[i], 0.1);
+    }
+    
+    try std.testing.expectEqual(@as(usize, 8), layer.num_coeffs);
 }
