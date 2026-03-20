@@ -74,6 +74,25 @@ pub const RawWire = struct {
         return self;
     }
 
+    pub fn initExternal(allocator: std.mem.Allocator, name: []const u8, schema_str: []const u8, size: usize, external_ptr: ?*anyopaque) !*RawWire {
+        const self = try allocator.create(RawWire);
+        self.* = .{
+            .allocator = allocator,
+            .name = try allocator.dupe(u8, name),
+            .schema_str = try allocator.dupe(u8, schema_str),
+            .size = size,
+            .is_buffered = false,
+            .banks = undefined,
+            .maps = undefined,
+            .full_mapping_size = 0,
+        };
+        self.banks[0] = @as([*]u8, @ptrCast(external_ptr))[0..size];
+        self.banks[1] = &[_]u8{};
+        self.maps[0] = self.maps[0][0..0];
+        self.maps[1] = self.maps[0][0..0];
+        return self;
+    }
+
     pub fn deinit(self: *RawWire) void {
         for (0..2) |i| {
             if (self.maps[i].len > 0) {
@@ -86,6 +105,7 @@ pub const RawWire = struct {
     }
 
     /// Flip the banks! Back becomes Front.
+    /// In Moontide Neural, this is the 'Synchronous Pulse Barrier'.
     pub fn swap(self: *RawWire) void {
         if (!self.is_buffered) return;
 
@@ -93,7 +113,8 @@ pub const RawWire = struct {
         self.front_index = 1 - self.front_index;
 
         // 2. Synchronize the new Back buffer with the new Front buffer
-        // This ensures that the next frame's sparse updates are applied to the full current state.
+        // FUTURE: For massive reservoirs, we should use a sparse 'Dirty Page' tracker
+        // or a SIMD-accelerated copy to minimize Infinity Fabric traffic.
         self.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
         @memcpy(self.banks[1 - self.front_index][0..self.size], self.banks[self.front_index][0..self.size]);
         self.setAccess(std.posix.PROT.NONE);

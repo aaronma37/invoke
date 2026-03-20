@@ -20,10 +20,18 @@ const WebGPUNode = struct {
     adapter: wgpu.WGPUAdapter,
     device: wgpu.WGPUDevice,
     queue: wgpu.WGPUQueue,
+    
+    // VRAM Wire
+    reservoir_ptr: ?[*]f32 = null,
+    vram_buffer: wgpu.WGPUBuffer = null,
+    
+    const NEURON_COUNT: usize = 1048576;
+    const BUFFER_SIZE: usize = NEURON_COUNT * 4;
 
     pub fn init(allocator: std.mem.Allocator) !*WebGPUNode {
         const self = try allocator.create(WebGPUNode);
         self.allocator = allocator;
+        self.reservoir_ptr = null;
 
         // 1. Create WebGPU Instance
         const instance_desc = wgpu.WGPUInstanceDescriptor{
@@ -84,11 +92,22 @@ const WebGPUNode = struct {
 
         self.queue = wgpu.wgpuDeviceGetQueue(self.device);
 
-        std.debug.print("[WebGPU Ext] SOTA Massive Swarm Renderer ACTIVE.\n", .{});
+        // 4. Create VRAM Buffer
+        const buffer_desc = wgpu.WGPUBufferDescriptor{
+            .nextInChain = null,
+            .label = "Reservoir VRAM Wire",
+            .usage = wgpu.WGPUBufferUsage_CopyDst | wgpu.WGPUBufferUsage_Storage,
+            .size = BUFFER_SIZE,
+            .mappedAtCreation = 0,
+        };
+        self.vram_buffer = wgpu.wgpuDeviceCreateBuffer(self.device, &buffer_desc);
+
+        std.debug.print("[WebGPU Ext] VRAM Wire Initialized ({} MB on GPU).\n", .{BUFFER_SIZE / 1024 / 1024});
         return self;
     }
 
     pub fn deinit(self: *WebGPUNode) void {
+        if (self.vram_buffer != null) wgpu.wgpuBufferRelease(self.vram_buffer);
         wgpu.wgpuQueueRelease(self.queue);
         wgpu.wgpuDeviceRelease(self.device);
         wgpu.wgpuAdapterRelease(self.adapter);
@@ -96,9 +115,18 @@ const WebGPUNode = struct {
         self.allocator.destroy(self);
     }
 
+    pub fn bind_wire(self: *WebGPUNode, name: [*c]const u8, ptr: ?*anyopaque) void {
+        const wire_name = std.mem.span(name);
+        if (std.mem.eql(u8, wire_name, "reservoir")) {
+            self.reservoir_ptr = @ptrCast(@alignCast(ptr.?));
+        }
+    }
+
     pub fn tick(self: *WebGPUNode) void {
-        _ = self;
-        // In a real SOTA implementation, we would process GPU command wires here.
+        if (self.reservoir_ptr) |ptr| {
+            // Upload 1M floats to GPU VRAM every pulse
+            wgpu.wgpuQueueWriteBuffer(self.queue, self.vram_buffer, 0, ptr, BUFFER_SIZE);
+        }
     }
 };
 
@@ -118,12 +146,17 @@ export fn destroy_node(handle: abi.moontide_node_h) void {
     node.deinit();
 }
 
-export fn bind_wire(handle: abi.moontide_node_h, name: [*c]const u8, ptr: ?*anyopaque, access: usize) abi.moontide_status_t {
-    _ = handle; _ = name; _ = ptr; _ = access;
+export fn bind_wire(handle: abi.moontide_node_h, name: [*c]const u8, ptr: ?*anyopaque, schema: [*c]const u8, access: usize) abi.moontide_status_t {
+    _ = schema; _ = access;
+    if (handle == null) return abi.MOONTIDE_STATUS_ERROR;
+    const node: *WebGPUNode = @ptrCast(@alignCast(handle));
+    node.bind_wire(name, ptr);
     return abi.MOONTIDE_STATUS_OK;
 }
 
-export fn tick(handle: abi.moontide_node_h) abi.moontide_status_t {
+export fn tick(handle: abi.moontide_node_h, pulse_count: u64) abi.moontide_status_t {
+    _ = pulse_count;
+    if (handle == null) return abi.MOONTIDE_STATUS_ERROR;
     const node: *WebGPUNode = @ptrCast(@alignCast(handle));
     node.tick();
     return abi.MOONTIDE_STATUS_OK;

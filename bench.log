@@ -1,0 +1,67 @@
+Initializing Moontide Kernel (Lua-Config Mode)...
+
+[Kernel] Hot-swapping GRAPH TOPOLOGY (Lua)...
+[Orchestrator] Registered Wire: tf.state (132004 bytes, Buffered: false)
+[ExtensionManager] CWD: /home/aaron-ma/invoke
+[ExtensionManager] Resolved: /home/aaron-ma/invoke/ext/libhud_ext.so
+[Extension] Attempting to dlopen: /home/aaron-ma/invoke/ext/libhud_ext.so
+[ExtensionManager] Loaded Runtime: hud (from ./ext/)
+INFO: Initializing raylib 5.6-dev
+INFO: Platform backend: DESKTOP (GLFW)
+INFO: Supported raylib modules:
+INFO:     > rcore:..... loaded (mandatory)
+INFO:     > rlgl:...... loaded (mandatory)
+INFO:     > rshapes:... loaded (optional)
+INFO:     > rtextures:. loaded (optional)
+INFO:     > rtext:..... loaded (optional)
+INFO:     > rmodels:... loaded (optional)
+INFO:     > raudio:.... loaded (optional)
+INFO: DISPLAY: Device initialized successfully
+INFO:     > Display size: 2560 x 1080
+INFO:     > Screen size:  800 x 600
+INFO:     > Render size:  800 x 600
+INFO:     > Viewport offsets: 0, 0
+INFO: GLAD: OpenGL extensions loaded successfully
+INFO: GL: Supported extensions count: 241
+INFO: GL: OpenGL device information:
+INFO:     > Vendor:   AMD
+INFO:     > Renderer: AMD Radeon RX 5600 XT (radeonsi, navi10, LLVM 19.1.1, DRM 3.64, 6.17.0-19-generic)
+INFO:     > Version:  4.6 (Core Profile) Mesa 24.2.8-1ubuntu1~24.04.1
+INFO:     > GLSL:     4.60
+INFO: GL: VAO extension detected, VAO functions loaded successfully
+INFO: GL: NPOT textures extension detected, full NPOT textures supported
+INFO: GL: DXT compressed textures supported
+INFO: GL: ETC2/EAC compressed textures supported
+INFO: PLATFORM: DESKTOP (GLFW - X11): Initialized successfully
+INFO: TEXTURE: [ID 1] Texture loaded successfully (1x1 | R8G8B8A8 | 1 mipmaps)
+INFO: TEXTURE: [ID 1] Default texture loaded successfully
+INFO: SHADER: [ID 1] Vertex shader compiled successfully
+INFO: SHADER: [ID 2] Fragment shader compiled successfully
+INFO: SHADER: [ID 3] Program shader loaded successfully
+INFO: SHADER: [ID 3] Default shader loaded successfully
+INFO: RLGL: Render batch vertex buffers loaded successfully in RAM (CPU)
+INFO: RLGL: Render batch vertex buffers loaded successfully in VRAM (GPU)
+INFO: RLGL: Default OpenGL state initialized successfully
+INFO: TEXTURE: [ID 2] Texture loaded successfully (128x128 | GRAY_ALPHA | 1 mipmaps)
+INFO: FONT: Default font loaded successfully (224 glyphs)
+INFO: SYSTEM: Working Directory: /home/aaron-ma/invoke
+INFO: TIMER: Target time per frame: 16.667 milliseconds
+[ExtensionManager] CWD: /home/aaron-ma/invoke
+[ExtensionManager] Resolved: /home/aaron-ma/invoke/ext/libluajit_ext.so
+[Extension] Attempting to dlopen: /home/aaron-ma/invoke/ext/libluajit_ext.so
+[ExtensionManager] Loaded Runtime: luajit (from ./ext/)
+[ExtensionManager] CWD: /home/aaron-ma/invoke
+[ExtensionManager] Resolved: /home/aaron-ma/invoke/ext/libwasm_ext.so
+[Extension] Attempting to dlopen: /home/aaron-ma/invoke/ext/libwasm_ext.so
+[ExtensionManager] Loaded Runtime: wasm (from ./ext/)
+[Orchestrator] Task Graph: 2 parallel levels.
+[Node tf.muscle] Hot-reloading script: examples/tf_simd/tf_engine.wasm.o
+[Node tf.animator] Hot-reloading script: examples/tf_simd/sim.lua
+[Silicon Auditor] Scanning: examples/tf_simd/sim.lua...
+[Parallel] RECOVERY for tf.animator.
+[Parallel] RECOVERY for tf.animator.
+[Parallel] RECOVERY for tf.animator.
+INFO: TEXTURE: [ID 2] Unloaded texture data from VRAM (GPU)
+INFO: SHADER: [ID 3] Default shader unloaded successfully
+INFO: TEXTURE: [ID 1] Default texture unloaded successfully
+INFO: Window closed successfully

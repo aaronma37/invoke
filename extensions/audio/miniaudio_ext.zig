@@ -111,9 +111,10 @@ export fn destroy_node(handle: abi.moontide_node_h) void {
     node.deinit();
 }
 
-export fn bind_wire(handle: abi.moontide_node_h, name: [*c]const u8, ptr: ?*anyopaque, access: usize) abi.moontide_status_t {
+export fn bind_wire(handle: abi.moontide_node_h, name: [*c]const u8, ptr: ?*anyopaque, schema: [*c]const u8, access: usize) abi.moontide_status_t {
     const node: *AudioNode = @ptrCast(@alignCast(handle));
     const wire_name = std.mem.span(name);
+    _ = schema;
     _ = access;
 
     if (std.mem.eql(u8, wire_name, "audio.play")) {

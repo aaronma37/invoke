@@ -2,6 +2,7 @@ const std = @import("std");
 const core = @import("core");
 const sandbox = core.sandbox;
 const Orchestrator = core.Orchestrator;
+const simd = @import("moontide_simd");
 
 const abi = @cImport({
     @cInclude("moontide.h");
@@ -76,30 +77,43 @@ const TensorNode = struct {
                     const total_len = cmd.rows * cmd.cols;
                     const a = memory[cmd.arg1_offset .. cmd.arg1_offset + total_len];
                     const b = memory[cmd.arg2_offset .. cmd.arg2_offset + total_len];
-                    var c = memory[cmd.dest_offset .. cmd.dest_offset + total_len];
+                    const c = memory[cmd.dest_offset .. cmd.dest_offset + total_len];
 
-                    for (0..total_len) |idx| {
-                        c[idx] = a[idx] + b[idx];
-                    }
+                    simd.add(c, a, b);
                 },
                 OP_RELU => {
                     // C = max(0, A)
                     const total_len = cmd.rows * cmd.cols;
                     const a = memory[cmd.arg1_offset .. cmd.arg1_offset + total_len];
-                    var c = memory[cmd.dest_offset .. cmd.dest_offset + total_len];
+                    const c = memory[cmd.dest_offset .. cmd.dest_offset + total_len];
 
-                    for (0..total_len) |idx| {
-                        c[idx] = if (a[idx] > 0.0) a[idx] else 0.0;
+                    // Explicit SIMD RELU
+                    var j: usize = 0;
+                    while (j + simd.VEC_SIZE <= total_len) : (j += simd.VEC_SIZE) {
+                        const va: simd.f32x8 = a[j..][0..simd.VEC_SIZE].*;
+                        const vz: simd.f32x8 = @splat(0.0);
+                        c[j..][0..simd.VEC_SIZE].* = @max(va, vz);
+                    }
+                    while (j < total_len) : (j += 1) {
+                        c[j] = if (a[j] > 0.0) a[j] else 0.0;
                     }
                 },
                 OP_SIGMOID => {
                     // C = 1 / (1 + exp(-A))
                     const total_len = cmd.rows * cmd.cols;
                     const a = memory[cmd.arg1_offset .. cmd.arg1_offset + total_len];
-                    var c = memory[cmd.dest_offset .. cmd.dest_offset + total_len];
+                    const c = memory[cmd.dest_offset .. cmd.dest_offset + total_len];
 
-                    for (0..total_len) |idx| {
-                        c[idx] = 1.0 / (1.0 + @exp(-a[idx]));
+                    // Explicit SIMD Sigmoid
+                    var j: usize = 0;
+                    while (j + simd.VEC_SIZE <= total_len) : (j += simd.VEC_SIZE) {
+                        const va: simd.f32x8 = a[j..][0..simd.VEC_SIZE].*;
+                        const vone: simd.f32x8 = @splat(1.0);
+                        // Zig's @exp supports vectors
+                        c[j..][0..simd.VEC_SIZE].* = vone / (vone + @exp(-va));
+                    }
+                    while (j < total_len) : (j += 1) {
+                        c[j] = 1.0 / (1.0 + @exp(-a[j]));
                     }
                 },
                 else => {}
@@ -124,9 +138,10 @@ export fn destroy_node(handle: abi.moontide_node_h) void {
     node.deinit();
 }
 
-export fn bind_wire(handle: abi.moontide_node_h, name: [*c]const u8, ptr: ?*anyopaque, access: usize) abi.moontide_status_t {
+export fn bind_wire(handle: abi.moontide_node_h, name: [*c]const u8, ptr: ?*anyopaque, schema: [*c]const u8, access: usize) abi.moontide_status_t {
     const node: *TensorNode = @ptrCast(@alignCast(handle));
     const wire_name = std.mem.span(name);
+    _ = schema;
     _ = access;
 
     if (std.mem.eql(u8, wire_name, "tensor.commands")) {

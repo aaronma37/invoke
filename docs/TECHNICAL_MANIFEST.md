@@ -1,42 +1,37 @@
-# The Moontide Technical Manifest
+# The Moontide Neural Technical Manifest
 
-**Moontide** is a high-performance runtime separating "Silicon" (Zig host) from "Software" (AI-logic).
+**Moontide Neural** is a high-performance runtime for neuromorphic intelligence, separating "Silicon" (Zig host) from "The Liquid" (Neural state).
 
-## 1. The Motherboard (Zig Kernel)
-A static, high-performance binary (< 2MB) providing the "Universal Silicon" platform.
+## 1. The Pulse Oscillator (Zig Kernel)
+The core kernel is no longer a general-purpose scheduler. It is a **Synchronicity Engine.**
 *   **Pure Silicon:** Zero dependencies on `lua.h`.
-*   **Silicon Gating:** Ruthlessly enforces hardware-level memory protection (`mprotect`) on Wires.
-*   **The Socket (moontide_abi.h):** A permanent C-ABI contract for all extensions.
-*   **Chameleon Scheduler:** A dependency-aware DAG executor that can toggle between Deterministic (Double-Buffered) and Dynamic (Single-Buffered) execution.
+*   **Synchronous Pulse Scheduling:** Replaces the DAG with fixed-frequency "Clock Domains" for synchronous neuronal updates.
+*   **Silicon Armor:** Enforces memory protection on Synaptic Wires using `mprotect`.
+*   **The Socket (moontide_abi.h):** A permanent C-ABI contract for Pulse and Learning extensions.
 
-## 2. Eternal Data (Wires)
+## 2. Eternal Synaptic Fabric (Wires)
 State lives on raw, page-aligned memory buffers that persist across logic reloads.
-*   **Double-Buffer Switch:** Wires can be "Banks" (Front/Back). Reads come from Front; Writes go to Back. The Kernel performs a Pointer Swap at the Frame Barrier.
-*   **Zero-Recompile Schema:** Uses JIT-Type-Casting to lay memory "stencils" over raw wires.
-*   **Schema Evolution:** Automated data migration when topology fields shift mid-execution.
+*   **Double-Buffer Pulse:** Wires are "Banks" (Front/Back). Reads come from Front (Time $T$); Writes go to Back (Time $T+1$). The Kernel performs a Pointer Swap at the end of the Pulse.
+*   **Sparse Connections:** Supports Indirection Tables for non-contiguous synaptic connectivity between neurons.
+*   **Gather-Scatter Optimized:** Specifically designed to leverage the **AVX-512** path on Zen 5 hardware.
 
-## 3. Ephemeral Logic (Nodes)
-Application behavior is isolated into "pluggable" sockets.
-*   **Indestructible Heartbeat:** Robust signal recovery ensures the Motherboard survives crashes in user logic.
-*   **Universal SDK:** Standardized logging (`moontide.log`) and services provided by the host via the ABI.
+## 3. Ephemeral Neural Logic (Nodes)
+Brain behavior is isolated into "pluggable" sockets.
+*   **The Inference Node:** Executes high-speed, leaky integrate-and-fire math. 
+*   **The Learning Node:** Executes background plasticity algorithms (STDP) without disrupting the inference heartbeat.
 
-## 4. The Handshake (ABI Protocol)
-Extensions must implement the following C-interface:
-*   `init()`: Identify capability and register with Motherboard.
-*   `bind_wire(name, ptr, access)`: Receive a memory pointer and permission level.
-*   `execute()`: Run logic for the current heartbeat.
-*   `set_log_handler(fn)`: Receive the host's telemetry callback.
+## 4. Hardware-Aware Concurrency
+Moontide Neural is "Silicon-Aware" for the 9950X:
+*   **CCD Pinning:** Threads are manually affinity-pinned to specific chiplets to maximize L3 cache hits.
+*   **Infinity Fabric Bypass:** Data flow between neurons is kept local to a CCD whenever possible to eliminate the cross-chiplet latency bottleneck.
 
-## 4. Data Layout Freedom (SOA vs AOS)
-Moontide is **Layout-Agnostic**. The Kernel provides raw memory; the AI defines the orientation.
-
-*   **AOS (Array of Structures):** Perfect for "Brain" nodes. The AI defines a complex wire (e.g., `stats: {x, y, hp}`). This is easy for logic but slower for the CPU cache.
-*   **SOA (Structure of Arrays):** Perfect for "Muscle" nodes (SIMD). The AI defines separate wires (e.g., `pos_x`, `pos_y`, `health`). This keeps the CPU cache hot and enables zero-copy vectorized processing.
-*   **The Switch:** Refactoring from AOS to SOA—which takes weeks in a traditional engine—is a 10-second change to the `topology.json` in Moontide.
-
-## 5. Universal Development
+## 5. Summary of the Neural Stack
 | Aspect | Mechanism |
 | :--- | :--- |
-| **Persistence** | Logic is swapped; Wires (RAM) remain constant. |
-| **Ubiquity** | The same kernel runs on any hardware; only extensions change. |
-| **Efficiency** | Worker AI context is isolated to a single Node + Wire Schema. |
+| **Synchrony** | Synchronous Pulse Scheduling replaces DAG dependency sorting. |
+| **Performance** | Native AVX-512 "Gather/Scatter" for sparse neural graphs. |
+| **Reliability** | Hardware-level memory protection for every synaptic connection. |
+| **Scalability** | Asynchronous plasticity (STDP) running on background cores. |
+
+---
+*The goal is bit-perfect, deterministic neuromorphic intelligence at the raw speed of the silicon gates.*

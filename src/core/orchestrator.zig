@@ -37,7 +37,7 @@ test "Orchestrator task graph rebuilding" {
         fn destroy(_: node.abi.moontide_node_h) callconv(.C) void {}
     }).destroy;
     mock_vtable.bind_wire = (struct {
-        fn bind(_: node.abi.moontide_node_h, _: [*c]const u8, _: ?*anyopaque, _: usize) callconv(.C) node.abi.moontide_status_t {
+        fn bind(_: node.abi.moontide_node_h, _: [*c]const u8, _: ?*anyopaque, _: [*c]const u8, _: usize) callconv(.C) node.abi.moontide_status_t {
             return node.abi.MOONTIDE_STATUS_OK;
         }
     }).bind;
@@ -130,7 +130,7 @@ test "Watchdog Timeout and Strike Count" {
         fn destroy(_: node.abi.moontide_node_h) callconv(.C) void {}
     }).destroy;
     mock_vtable.bind_wire = (struct {
-        fn bind(_: node.abi.moontide_node_h, _: [*c]const u8, _: ?*anyopaque, _: usize) callconv(.C) node.abi.moontide_status_t {
+        fn bind(_: node.abi.moontide_node_h, _: [*c]const u8, _: ?*anyopaque, _: [*c]const u8, _: usize) callconv(.C) node.abi.moontide_status_t {
             return node.abi.MOONTIDE_STATUS_OK;
         }
     }).bind;
@@ -185,7 +185,7 @@ test "Poke (Event) system" {
         fn destroy(_: node.abi.moontide_node_h) callconv(.C) void {}
     }).destroy;
     mock_vtable.bind_wire = (struct {
-        fn bind(_: node.abi.moontide_node_h, _: [*c]const u8, _: ?*anyopaque, _: usize) callconv(.C) node.abi.moontide_status_t {
+        fn bind(_: node.abi.moontide_node_h, _: [*c]const u8, _: ?*anyopaque, _: [*c]const u8, _: usize) callconv(.C) node.abi.moontide_status_t {
             return node.abi.MOONTIDE_STATUS_OK;
         }
     }).bind;
@@ -245,7 +245,7 @@ test "Deterministic Scheduler (Race Prevention)" {
         fn destroy(_: node.abi.moontide_node_h) callconv(.C) void {}
     }).destroy;
     mock_vtable.bind_wire = (struct {
-        fn bind(_: node.abi.moontide_node_h, _: [*c]const u8, _: ?*anyopaque, _: usize) callconv(.C) node.abi.moontide_status_t {
+        fn bind(_: node.abi.moontide_node_h, _: [*c]const u8, _: ?*anyopaque, _: [*c]const u8, _: usize) callconv(.C) node.abi.moontide_status_t {
             return node.abi.MOONTIDE_STATUS_OK;
         }
     }).bind;
@@ -551,6 +551,7 @@ pub const Orchestrator = struct {
     
     watchdog_thread: ?std.Thread = null,
     watchdog_active: bool = false,
+    pulse_count: u64 = 0,
 
     pub fn init(self: *Orchestrator, allocator: std.mem.Allocator) !void {
         self.* = .{
@@ -562,6 +563,7 @@ pub const Orchestrator = struct {
             .pokes = std.ArrayList([]const u8).init(allocator),
             .pokes_mutex = .{},
             .nodes_mutex = .{},
+            .pulse_count = 0,
         };
         
         self.watchdog_active = true;
@@ -635,6 +637,19 @@ pub const Orchestrator = struct {
         return w;
     }
 
+    pub fn addExternalWire(self: *Orchestrator, path: []const u8, schema_str: []const u8, size: usize, external_ptr: ?*anyopaque) !*wire.RawWire {
+        if (self.wires.get(path)) |_| {
+            if (self.wires.fetchRemove(path)) |entry| {
+                self.allocator.free(entry.key);
+                entry.value.deinit();
+            }
+        }
+        const w = try wire.RawWire.initExternal(self.allocator, path, schema_str, size, external_ptr);
+        try self.wires.put(try self.allocator.dupe(u8, path), w);
+        std.debug.print("[Orchestrator] Registered External Wire: {s} ({d} bytes at {?*})\n", .{ path, size, external_ptr });
+        return w;
+    }
+
     pub fn createNode(self: *Orchestrator, path: []const u8, ext_type: []const u8, mode: ExecutionMode, script: []const u8) !*node.Node {
         if (self.nodes.get(path)) |n| return n;
 
@@ -652,111 +667,42 @@ pub const Orchestrator = struct {
         self.levels.clearRetainingCapacity();
 
         // --- SILICON UNLOCK ---
-        // During DAG construction, we must ensure wires are readable.
         var wit = self.wires.valueIterator();
         while (wit.next()) |w| w.*.setAccess(std.posix.PROT.READ);
 
-        var remaining = std.ArrayList(*node.Node).init(self.allocator);
-        defer remaining.deinit();
-        
+        var current_level = std.ArrayList(*node.Node).init(self.allocator);
         var it = self.nodes.valueIterator();
         while (it.next()) |n| {
-            if (n.*.mode == .Heartbeat) try remaining.append(n.*);
+            if (n.*.mode == .Heartbeat) try current_level.append(n.*);
         }
 
         // 1. DETERMINISM: Sort nodes by name
-        std.mem.sort(*node.Node, remaining.items, {}, struct {
+        std.mem.sort(*node.Node, current_level.items, {}, struct {
             fn lessThan(_: void, a: *node.Node, b: *node.Node) bool {
                 return std.mem.lessThan(u8, a.name, b.name);
             }
         }.lessThan);
 
-        var completed = std.StringHashMap(void).init(self.allocator);
-        defer completed.deinit();
-
-        while (remaining.items.len > 0) {
-            var current_level = std.ArrayList(*node.Node).init(self.allocator);
-            var i: usize = 0;
-            var added_any = false;
-
-            while (i < remaining.items.len) {
-                const n = remaining.items[i];
-                
-                // --- 2. 'AFTER' DEPENDENCY CHECK ---
-                var deps_met = true;
-                for (n.after.items) |dep| {
-                    if (!completed.contains(dep)) {
-                        deps_met = false;
-                        break;
-                    }
-                }
-
-                if (!deps_met) {
-                    i += 1;
-                    continue;
-                }
-
-                // --- 3. CONFLICT CHECK ---
-                var conflict = false;
-                for (current_level.items) |other| {
-                    if (nodesCollide(n, other)) {
-                        conflict = true;
-                        break;
-                    }
-                }
-
-                if (!conflict) {
-                    try current_level.append(n);
-                    _ = remaining.swapRemove(i);
-                    added_any = true;
-                } else {
-                    i += 1;
-                }
-            }
-
-            if (!added_any) {
-                std.debug.print("[Orchestrator] ERROR: Circular dependency detected or impossible graph!\n", .{});
-                // RE-LOCK before erroring
-                var wit_err = self.wires.valueIterator();
-                while (wit_err.next()) |w| w.*.setAccess(std.posix.PROT.NONE);
-                return error.CircularDependency;
-            }
-
-            // Mark this level as completed for 'after' constraints
-            for (current_level.items) |n| {
-                try completed.put(n.name, {});
-            }
-
-            try self.levels.append(current_level);
-        }
+        try self.levels.append(current_level);
         
         // --- SILICON RE-LOCK ---
         var wit_end = self.wires.valueIterator();
         while (wit_end.next()) |w| w.*.setAccess(std.posix.PROT.NONE);
 
-        std.debug.print("[Orchestrator] Task Graph: {d} parallel levels.\n", .{ self.levels.items.len });
+        std.debug.print("[Orchestrator] Neural Pulse Graph: {d} nodes in parallel.\n", .{ current_level.items.len });
     }
 
     fn nodesCollide(a: *node.Node, b: *node.Node) bool {
+        // In the Synchronous Pulse model, nodes ONLY collide if they 
+        // both write to the SAME bank of a NON-BUFFERED wire.
         var a_it = a.bound_wires.valueIterator();
         while (a_it.next()) |a_b| {
-            // CRITICAL: The scheduler needs to read the wire pointer/metadata.
-            // But wires are usually locked (PROT_NONE).
-            // Actually, we are only reading 'a_b.wire' which is a pointer in the Node,
-            // NOT the memory the wire points to.
-            // Wait, why did it segfault? Ah! I accessed 'a_b.wire.is_buffered' in the previous version.
-            // In the NEW version, I don't access 'is_buffered'.
-            // Let me check if anything else in 'nodesCollide' accesses the wire data.
-            
             if (a_b.access & 2 != 0) { // A writes
-                var b_it = b.bound_wires.valueIterator();
-                while (b_it.next()) |b_b| {
-                    if (b_b.wire == a_b.wire) return true; // B uses same wire
-                }
-            } else { // A reads
-                var b_it = b.bound_wires.valueIterator();
-                while (b_it.next()) |b_b| {
-                    if (b_b.wire == a_b.wire and b_b.access & 2 != 0) return true; // B writes same wire
+                if (!a_b.wire.is_buffered) {
+                    var b_it = b.bound_wires.valueIterator();
+                    while (b_it.next()) |b_b| {
+                        if (b_b.wire == a_b.wire and b_b.access & 2 != 0) return true;
+                    }
                 }
             }
         }
@@ -775,9 +721,11 @@ pub const Orchestrator = struct {
     }
 
     pub fn tick(self: *Orchestrator) !void {
+        self.pulse_count += 1;
+
         // HEARTBEAT NODES
         for (self.levels.items) |level| {
-            // 1. Level-wide Memory Grant
+            // 1. Level-wide Memory Grant (THE PULSE BARRIER)
             for (level.items) |n| {
                 if (n.is_jailed) continue;
                 var it = n.bound_wires.iterator();
@@ -785,14 +733,21 @@ pub const Orchestrator = struct {
                     const binding = entry.value_ptr;
                     const w = binding.wire;
                     const is_write = (binding.access & 2 != 0);
-                    const bank_idx: usize = if (w.is_buffered and is_write) 1 - w.front_index else w.front_index;
-                    w.setBankAccess(bank_idx, binding.access);
                     
-                    // Also bind for extensions
+                    if (w.is_buffered and is_write) {
+                        w.setBankAccess(1 - w.front_index, std.posix.PROT.READ | std.posix.PROT.WRITE);
+                    } else {
+                        w.setBankAccess(w.front_index, binding.access);
+                    }
+                    
+                    // Bind for extensions
                     const name_z = try n.allocator.dupeZ(u8, entry.key_ptr.*);
                     defer n.allocator.free(name_z);
+                    const schema_z = try n.allocator.dupeZ(u8, w.schema_str);
+                    defer n.allocator.free(schema_z);
+
                     const ptr = if (w.is_buffered and is_write) w.backPtr() else w.frontPtr();
-                    _ = n.vtable.bind_wire.?(n.handle, name_z.ptr, ptr, binding.access);
+                    _ = n.vtable.bind_wire.?(n.handle, name_z.ptr, ptr, schema_z.ptr, binding.access);
                 }
             }
 
@@ -801,13 +756,13 @@ pub const Orchestrator = struct {
 
             for (level.items) |n| {
                 if (std.mem.eql(u8, n.ext_type, "hud")) continue;
-                try threads.append(try std.Thread.spawn(.{}, parallelWorker, .{n}));
+                try threads.append(try std.Thread.spawn(.{}, parallelWorker, .{n, self.pulse_count}));
             }
 
             // Run Main-Thread nodes LOCALLY while workers are busy
             for (level.items) |n| {
                 if (std.mem.eql(u8, n.ext_type, "hud")) {
-                    n.execute() catch |err| {
+                    n.execute(self.pulse_count) catch |err| {
                         std.debug.print("[Orchestrator] Node {s} failed: {any}\n", .{ n.name, err });
                     };
                 }
@@ -821,9 +776,7 @@ pub const Orchestrator = struct {
                 var it = n.bound_wires.valueIterator();
                 while (it.next()) |binding| {
                     const w = binding.wire;
-                    const is_write = (binding.access & 2 != 0);
-                    const bank_idx: usize = if (w.is_buffered and is_write) 1 - w.front_index else w.front_index;
-                    w.setBankAccess(bank_idx, std.posix.PROT.NONE);
+                    w.setAccess(std.posix.PROT.NONE);
                 }
             }
         }
@@ -850,7 +803,7 @@ pub const Orchestrator = struct {
         }
     }
 
-    fn parallelWorker(n: *node.Node) void {
+    fn parallelWorker(n: *node.Node, pulse_count: u64) void {
         if (n.is_jailed) return;
 
         // TRACK START
@@ -858,44 +811,19 @@ pub const Orchestrator = struct {
         n.start_time.store(std.time.milliTimestamp(), .monotonic);
         n.is_running.store(true, .release);
 
-        // --- SILICON GRANT ---
-        var it = n.bound_wires.iterator();
-        while (it.next()) |entry| {
-            const binding = entry.value_ptr;
-            const w = binding.wire;
-            const is_write = (binding.access & 2 != 0);
-            if (w.is_buffered and is_write) {
-                // Grant access to the BACK bank for writing
-                w.setBankAccess(1 - w.front_index, binding.access);
-            } else {
-                // Grant access to the FRONT bank for reading
-                w.setBankAccess(w.front_index, binding.access);
-            }
-        }
-
         sandbox.is_recovering = true;
         const code = sandbox.c.setjmp(&sandbox.jump_buffer);
         if (code == 0) {
-            n.execute() catch |err| {
+            n.execute(pulse_count) catch |err| {
                 std.debug.print("[Parallel] Node {s} failed: {any}\n", .{ n.name, err });
             };
         } else {
             // CRITICAL: DO NOT ALLOCATE OR FREE HERE.
             n.strike_count += 1;
-            if (n.strike_count >= 3) n.is_jailed = true;
-            std.debug.print("[Parallel] RECOVERY for {s}.\n", .{ n.name });
+            if (n.strike_count >= 10) n.is_jailed = true;
+            std.debug.print("[Parallel] RECOVERY for {s}. (Strikes: {d}/10)\n", .{ n.name, n.strike_count });
         }
         
-        // --- SILICON REVOKE ---
-        it = n.bound_wires.iterator();
-        while (it.next()) |entry| {
-            const binding = entry.value_ptr;
-            const w = binding.wire;
-            const is_write = (binding.access & 2 != 0);
-            const bank_idx: usize = if (w.is_buffered and is_write) 1 - w.front_index else w.front_index;
-            w.setBankAccess(bank_idx, std.posix.PROT.NONE);
-        }
-
         // TRACK END
         n.is_running.store(false, .release);
         sandbox.is_recovering = false;
@@ -924,7 +852,6 @@ pub const Orchestrator = struct {
     }
 
     fn executeNode(self: *Orchestrator, n: *node.Node) !void {
-        _ = self;
         if (n.is_jailed) return;
 
         var it = n.bound_wires.iterator();
@@ -937,13 +864,23 @@ pub const Orchestrator = struct {
             
             const name_z = try n.allocator.dupeZ(u8, entry.key_ptr.*);
             defer n.allocator.free(name_z);
-            _ = n.vtable.bind_wire.?(n.handle, name_z.ptr, ptr, binding.access);
+            const schema_z = try n.allocator.dupeZ(u8, w.schema_str);
+            defer n.allocator.free(schema_z);
+
+            _ = n.vtable.bind_wire.?(n.handle, name_z.ptr, ptr, schema_z.ptr, binding.access);
             w.setBankAccess(bank_idx, binding.access);
         }
 
-        n.execute() catch |err| {
+        const start_time = std.time.nanoTimestamp();
+        n.execute(self.pulse_count) catch |err| {
             std.debug.print("[Orchestrator] Node {s} failed: {any}\n", .{ n.name, err });
         };
+        const end_time = std.time.nanoTimestamp();
+
+        // BENCHMARK: Log performance for ALL nodes to find our target
+        const elapsed_ns = end_time - start_time;
+        const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
+        std.debug.print("[BENCHMARK] Node '{s}' took {d:.3}ms\n", .{ n.name, elapsed_ms });
 
         it = n.bound_wires.iterator();
         while (it.next()) |entry| {
@@ -1039,6 +976,12 @@ export fn moontide_orch_add_wire(handle: ?*anyopaque, name: [*c]const u8, schema
     const orch: *Orchestrator = @ptrCast(@alignCast(handle));
     const w = orch.addWire(std.mem.span(name), std.mem.span(schema_str), size, buffered) catch return null;
     return @ptrCast(w);
+}
+
+export fn moontide_orch_bind_external_wire(handle: ?*anyopaque, name: [*c]const u8, schema_str: [*c]const u8, size: usize, external_ptr: ?*anyopaque) node.abi.moontide_status_t {
+    const orch: *Orchestrator = @ptrCast(@alignCast(handle));
+    _ = orch.addExternalWire(std.mem.span(name), std.mem.span(schema_str), size, external_ptr) catch return node.abi.MOONTIDE_STATUS_ERROR;
+    return node.abi.MOONTIDE_STATUS_OK;
 }
 
 export fn moontide_wire_get_ptr(handle: ?*anyopaque) ?*anyopaque {

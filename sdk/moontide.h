@@ -6,12 +6,12 @@
 #include <stdbool.h>
 
 /**
- * MOONTIDE ABI v1.1
+ * MOONTIDE ABI v1.2
  * The stable handshake between the Pure Silicon (Kernel) 
  * and the logic runtimes (Extensions).
  */
 
-#define MOONTIDE_ABI_VERSION 1
+#define MOONTIDE_ABI_VERSION 2
 
 #define MOONTIDE_STATUS_OK 0
 #define MOONTIDE_STATUS_ERROR 1
@@ -50,10 +50,10 @@ typedef struct {
     void (*destroy_node)(moontide_node_h node);
 
     // 2. Data Wiring
-    moontide_status_t (*bind_wire)(moontide_node_h node, const char* name, void* ptr, size_t access);
+    moontide_status_t (*bind_wire)(moontide_node_h node, const char* name, void* ptr, const char* schema, size_t access);
 
     // 3. Execution
-    moontide_status_t (*tick)(moontide_node_h node);
+    moontide_status_t (*tick)(moontide_node_h node, uint64_t pulse_count);
     moontide_status_t (*reload_node)(moontide_node_h node, const char* script_path);
 
     // 4. Events (Poke)

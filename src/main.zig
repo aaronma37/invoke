@@ -31,18 +31,6 @@ pub fn main() !void {
         try cmdRun(allocator, topo_path);
     } else if (std.mem.eql(u8, command, "init")) {
         try cmdInit();
-    } else if (std.mem.eql(u8, command, "save")) {
-        if (args.len < 3) {
-            std.debug.print("Usage: moontide save [path.tide]\n", .{});
-            return;
-        }
-        try cmdSave(allocator, args[2]);
-    } else if (std.mem.eql(u8, command, "load")) {
-        if (args.len < 3) {
-            std.debug.print("Usage: moontide load [path.tide]\n", .{});
-            return;
-        }
-        try cmdLoad(allocator, args[2]);
     } else if (std.mem.eql(u8, command, "sdk")) {
         if (args.len < 3) {
             printUsage();
@@ -53,11 +41,8 @@ pub fn main() !void {
         } else {
             printUsage();
         }
-    } else if (std.mem.eql(u8, command, "bundle")) {
-        const topo_path = if (args.len > 2) args[2] else "topology.lua";
-        try cmdBundle(allocator, topo_path);
     } else if (std.mem.eql(u8, command, "version")) {
-        std.debug.print("Moontide Kernel v0.5.0 (Lua-Config Edition)\n", .{});
+        std.debug.print("Moontide Neural Oscillator v0.6.0\n", .{});
         std.debug.print("Silicon ABI v{d}\n", .{node.abi.MOONTIDE_ABI_VERSION});
     } else {
         printUsage();
@@ -66,93 +51,19 @@ pub fn main() !void {
 
 fn printUsage() void {
     std.debug.print(
-        \\Moontide: The AI-Native Runtime Engine
+        \\Moontide Neural: The Silicon Brain Motherboard
         \\
         \\Usage:
-        \\  moontide run [topology.lua]   Boot the pure silicon kernel
-        \\  moontide init                Scaffold a new Moontide project
-        \\  moontide bundle [topo.lua]   Package kernel + extensions + scripts for distribution
-        \\  moontide save [path.tide]    Dump current silicon state to disk (placeholder)
-        \\  moontide load [path.tide]    Restore silicon state from disk (placeholder)
+        \\  moontide run [topology.lua]   Boot the pulse oscillator
+        \\  moontide init                Scaffold a new Neural project
         \\  moontide sdk install         Install SDK headers and runtimes globally
         \\  moontide version             Display version info
         \\
     , .{});
 }
 
-fn cmdBundle(allocator: std.mem.Allocator, topo_path: []const u8) !void {
-    std.debug.print("[Bundle] Packaging Moontide Application for distribution...\n", .{});
-    
-    const dist_dir = "dist";
-    std.fs.cwd().makePath(dist_dir) catch |err| {
-        if (err != error.PathAlreadyExists) return err;
-    };
-
-    // 1. Copy Kernel
-    const kernel_src = "zig-out/bin/moontide";
-    const kernel_dst = "dist/moontide";
-    std.debug.print("  -> Copying Kernel: {s}\n", .{kernel_src});
-    try std.fs.cwd().copyFile(kernel_src, std.fs.cwd(), kernel_dst, .{});
-
-    // 2. Create sub-dirs
-    try std.fs.cwd().makePath("dist/ext");
-    try std.fs.cwd().makePath("dist/gen");
-
-    // 3. Simple static copy of all .so and .lua for now
-    // (A SOTA version would parse the topology to find ONLY used files)
-    
-    var ext_dir = try std.fs.cwd().openDir("ext", .{ .iterate = true });
-    defer ext_dir.close();
-    var it = ext_dir.iterate();
-    while (try it.next()) |entry| {
-        if (std.mem.endsWith(u8, entry.name, ".so")) {
-            std.debug.print("  -> Copying Extension: {s}\n", .{entry.name});
-            const dst_path = try std.fs.path.join(allocator, &.{ "dist/ext", entry.name });
-            defer allocator.free(dst_path);
-            try ext_dir.copyFile(entry.name, std.fs.cwd(), dst_path, .{});
-        }
-    }
-
-    // 4. Copy Topology
-    std.debug.print("  -> Copying Topology: {s}\n", .{topo_path});
-    try std.fs.cwd().copyFile(topo_path, std.fs.cwd(), "dist/topology.lua", .{});
-
-    // 5. Create run script
-    const run_sh = 
-        \\#!/bin/bash
-        \\export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:./ext
-        \\./moontide run topology.lua
-    ;
-    try std.fs.cwd().writeFile(.{ .sub_path = "dist/run.sh", .data = run_sh });
-    
-    // Set executable bit
-    const run_file = try std.fs.cwd().openFile("dist/run.sh", .{});
-    defer run_file.close();
-    // try run_file.chmod(0o755); // Zig 0.11+ way or use system
-    _ = std.os.linux.chmod("dist/run.sh", 0o755);
-
-    std.debug.print("\n[Bundle] SUCCESS! Application packaged in './dist/'.\n", .{});
-    std.debug.print("         To run: cd dist && ./run.sh\n", .{});
-}
-
-fn cmdSave(allocator: std.mem.Allocator, path: []const u8) !void {
-    std.debug.print("[CLI] Saving state to {s}...\n", .{path});
-    
-    // Note: To save a "Running" state, we'd need to attach to a running process.
-    // For now, this is a placeholder for the logic. In a real scenario,
-    // the kernel would handle a 'save' signal or command.
-    _ = allocator;
-    std.debug.print("[CLI] Save complete (Simulation only for now).\n", .{});
-}
-
-fn cmdLoad(allocator: std.mem.Allocator, path: []const u8) !void {
-    std.debug.print("[CLI] Loading state from {s}...\n", .{path});
-    _ = allocator;
-    std.debug.print("[CLI] Load complete (Simulation only for now).\n", .{});
-}
-
 fn cmdInit() !void {
-    std.debug.print("[CLI] Scaffolding new Moontide project...\n", .{});
+    std.debug.print("[CLI] Scaffolding new Moontide Neural project...\n", .{});
     
     try std.fs.cwd().makePath("ext");
     try std.fs.cwd().makePath("gen");
@@ -160,8 +71,8 @@ fn cmdInit() !void {
     const default_topo = 
         \\return {
         \\  namespaces = {
-        \\    app = {
-        \\      wires = { stats = "x:f32;y:f32" },
+        \\    brain = {
+        \\      wires = { reservoir = "potentials:f32[1024];thresholds:f32[1024]" },
         \\      nodes = {}
         \\    }
         \\  }
@@ -229,12 +140,10 @@ fn cmdSdkInstall(allocator: std.mem.Allocator) !void {
     }
 
     std.debug.print("[CLI] SDK Installation Complete!\n", .{});
-    std.debug.print("      Headers: {s}\n", .{header_dst});
-    std.debug.print("      Runtimes: {s}\n", .{lib_dir_dst});
 }
 
 fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
-    std.debug.print("Initializing Moontide Kernel (Lua-Config Mode)...\n", .{});
+    std.debug.print("Initializing Moontide Neural Oscillator...\n", .{});
 
     // Register Signal Handler
     sandbox.initSignalHandler();
@@ -247,10 +156,10 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
     @import("core/extension.zig").current_orch = &orch;
 
     var last_topology_mtime: i128 = 0;
-    var frame_count: u32 = 0;
+    var pulse_count: u32 = 0;
 
     while (true) {
-        frame_count += 1;
+        pulse_count += 1;
         
         // --- 0. OS EVENT POLLING ---
         var node_it = orch.nodes.valueIterator();
@@ -272,7 +181,7 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
         topo_file.close();
 
         if (stat.mtime > last_topology_mtime) {
-            std.debug.print("\n[Kernel] Hot-swapping GRAPH TOPOLOGY (Lua)...\n", .{});
+            std.debug.print("\n[Kernel] Hot-swapping NEURAL TOPOLOGY...\n", .{});
             last_topology_mtime = stat.mtime;
             sandbox.is_recovering = false;
             reloadTopology(allocator, &orch, topo_path) catch |err| {
@@ -280,69 +189,29 @@ fn cmdRun(allocator: std.mem.Allocator, topo_path: []const u8) !void {
             };
         }
 
-        if (frame_count % 10 == 0) try orch.poke("on_collision");
-
-        // 2. RESILIENT HEARTBEAT
+        // 2. RESILIENT NEURAL HEARTBEAT (1000Hz Pulse)
         sandbox.is_recovering = true;
         if (sandbox.c.setjmp(&sandbox.jump_buffer) == 0) {
             try orch.tick();
         } else {
-            std.debug.print("\n[Kernel] RECOVERY (Frame {d}): A Node attempted a memory violation! Motherboard survives.\n", .{frame_count});
+            std.debug.print("\n[Kernel] RECOVERY (Pulse {d}): A Neural Node attempted a memory violation!\n", .{pulse_count});
         }
         sandbox.is_recovering = false;
 
         orch.swapAllWires();
         
-        std.time.sleep(16 * std.time.ns_per_ms);
+        // 1ms = 1000Hz update frequency for Liquid State Machines
+        std.time.sleep(1 * std.time.ns_per_ms);
 
         // 3. Monitor
-        if (orch.getWire("swarm.boids_north")) |w| {
-            w.setAccess(std.posix.PROT.READ);
-            const ptr: [*]u8 = @ptrCast(w.ptr());
-            const count = @as(*i32, @ptrCast(@alignCast(ptr))).*;
-            const x = @as(*f32, @ptrCast(@alignCast(ptr + 4))).*;
-            const y = @as(*f32, @ptrCast(@alignCast(ptr + 4004))).*;
-            std.debug.print("[Monitor] Boids North: {d} | First Boid: ({d: >5.2}, {d: >5.2})\n", .{ count, x, y });
-            w.setAccess(std.posix.PROT.NONE);
-        } else if (orch.getWire("player.stats")) |w| {
-            w.setAccess(std.posix.PROT.READ);
-            const ptr: [*]u8 = @ptrCast(w.ptr());
-            const x = @as(*f32, @ptrCast(@alignCast(ptr))).*;
-            const health_offset: usize = if (std.mem.indexOf(u8, w.schema_str, "z:f32") != null) 12 else 8;
-            const health = @as(*i32, @ptrCast(@alignCast(ptr + health_offset))).*;
-            std.debug.print("[Monitor] Frame {d} | Player X: {d: >5.2} | HP: {d}\n", .{ frame_count, x, health });
-            w.setAccess(std.posix.PROT.NONE);
-        } else if (orch.getWire("er.clock")) |w| {
-            w.setAccess(std.posix.PROT.READ);
-            const ptr: [*]u8 = @ptrCast(w.ptr());
-            const now = @as(*f64, @ptrCast(@alignCast(ptr))).*;
-            const processed = @as(*i32, @ptrCast(@alignCast(ptr + 8))).*;
-            std.debug.print("[Monitor] ER Sim Time: {d: >7.2} | Patients Handled: {d}\n", .{ now, processed });
-            w.setAccess(std.posix.PROT.NONE);
-        } else if (orch.getWire("claw.command")) |w| {
-            w.setAccess(std.posix.PROT.READ);
-            const ptr: [*]u8 = @ptrCast(w.ptr());
-            const op = @as(*i32, @ptrCast(@alignCast(ptr))).*;
-            const path_ptr: [*c]const u8 = @ptrCast(ptr + 4);
-            
-            var status: i32 = 0;
-            if (orch.getWire("claw.security")) |sw| {
-                sw.setAccess(std.posix.PROT.READ);
-                const sptr: [*]u8 = @ptrCast(sw.ptr());
-                status = @as(*i32, @ptrCast(@alignCast(sptr))).*;
-                sw.setAccess(std.posix.PROT.NONE);
+        if (orch.getWire("brain.reservoir")) |w| {
+            if (pulse_count % 100 == 0) {
+                w.setAccess(std.posix.PROT.READ);
+                const potentials: [*]f32 = @ptrCast(@alignCast(w.ptr()));
+                std.debug.print("\r[Monitor] Pulse {d: >8} | Neuron 0 Pot: {d: >5.3} | Neuron 1 Pot: {d: >5.3}   ", 
+                    .{ pulse_count, potentials[0], potentials[1] });
+                w.setAccess(std.posix.PROT.NONE);
             }
-
-            const status_str = switch(status) {
-                0 => "PENDING ",
-                1 => "ALLOWED ",
-                2 => "DENIED  ",
-                else => "UNKNOWN ",
-            };
-
-            std.debug.print("[Monitor Claw] Op: {d} | Path: {s: <12} | Security: {s}\n", 
-                .{ op, path_ptr, status_str });
-            w.setAccess(std.posix.PROT.NONE);
         }
     }
 }
@@ -401,39 +270,36 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
 
                 const full_path = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_name, w_name });
                 defer allocator.free(full_path);
-                const w_existed = orch.getWire(full_path) != null;
                 const size = schema.CalculateSchemaSize(w_schema);
                 const w = try orch.addWire(full_path, w_schema, size, w_buffered);
-                
-                if (!w_existed and std.mem.eql(u8, full_path, "player.stats")) {
+
+                if (std.mem.eql(u8, full_path, "brain.reservoir")) {
                     w.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
-                    const base_ptr: [*]u8 = @ptrCast(w.backPtr());
-                    const health_ptr: *i32 = @ptrCast(@alignCast(base_ptr + 8));
-                    health_ptr.* = 100;
+                    const base: [*]f32 = @ptrCast(@alignCast(w.backPtr()));
+                    // Initialize thresholds to 0.5
+                    for (1048576 .. 1048576 * 2) |i| {
+                        base[i] = 0.5;
+                    }
                     w.setAccess(std.posix.PROT.NONE);
                 }
-
-                if (!w_existed and std.mem.startsWith(u8, full_path, "swarm.boids")) {
+                
+                if (std.mem.eql(u8, full_path, "brain.synapses")) {
                     w.setAccess(std.posix.PROT.READ | std.posix.PROT.WRITE);
-                    const base_ptr: [*]u8 = @ptrCast(w.backPtr());
-                    const count_ptr: *i32 = @ptrCast(@alignCast(base_ptr));
-                    count_ptr.* = 100;
-
+                    const back_ptr: [*]u8 = @ptrCast(w.backPtr());
+                    const base: [*]u32 = @ptrCast(@alignCast(back_ptr));
+                    const weights: [*]f32 = @ptrCast(@alignCast(back_ptr + 33554432 * 4));
+                    
                     var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
                     const rand = prng.random();
-                    const is_north = std.mem.indexOf(u8, full_path, "north") != null;
-                    const y_offset: f32 = if (is_north) 150.0 else -150.0;
 
-                    for (0..100) |i| {
-                        const px_ptr: *f32 = @ptrCast(@alignCast(base_ptr + 4 + (i * 4)));
-                        const py_ptr: *f32 = @ptrCast(@alignCast(base_ptr + 4004 + (i * 4)));
-                        const vx_ptr: *f32 = @ptrCast(@alignCast(base_ptr + 8004 + (i * 4)));
-                        const vy_ptr: *f32 = @ptrCast(@alignCast(base_ptr + 12004 + (i * 4)));
-
-                        px_ptr.* = rand.float(f32) * 400.0 - 200.0;
-                        py_ptr.* = rand.float(f32) * 200.0 - 100.0 + y_offset;
-                        vx_ptr.* = rand.float(f32) * 2.0 - 1.0;
-                        vy_ptr.* = rand.float(f32) * 2.0 - 1.0;
+                    for (0..1048576) |ni| {
+                        for (0..32) |ci| {
+                            const synapse_idx = ni * 32 + ci;
+                            const offset = @as(i32, @intCast(rand.uintLessThan(u32, 200))) - 100;
+                            const target = @as(u32, @intCast(@max(0, @min(1048575, @as(i32, @intCast(ni)) + offset))));
+                            base[synapse_idx] = target;
+                            weights[synapse_idx] = rand.float(f32) * 0.1;
+                        }
                     }
                     w.setAccess(std.posix.PROT.NONE);
                 }
@@ -490,7 +356,6 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
                 defer allocator.free(full_path);
                 const mode = if (std.mem.eql(u8, n_mode_str, "Poke")) orchestrator.ExecutionMode.Poke else orchestrator.ExecutionMode.Heartbeat;
                 
-                // BOOTLOADER FIX: Create node with "none" first
                 const n = try orch.createNode(full_path, ext_type, mode, "none");
                 
                 l.lua_getfield(L, -1, "triggers");
@@ -504,33 +369,6 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
                     }
                 }
                 l.lua_pop(L, 1);
-
-                l.lua_getfield(L, -1, "after");
-                if (l.lua_type(L, -1) == l.LUA_TTABLE) {
-                    const a_count = l.lua_objlen(L, -1);
-                    for (1..a_count + 1) |ai| {
-                        l.lua_pushinteger(L, @intCast(ai));
-                        l.lua_gettable(L, -2);
-                        const dep_name = std.mem.span(l.lua_tolstring(L, -1, null));
-                        const full_dep = if (std.mem.indexOf(u8, dep_name, ".") != null) try allocator.dupe(u8, dep_name) else try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ns_name, dep_name });
-                        defer allocator.free(full_dep);
-                        try n.after.append(try allocator.dupe(u8, full_dep));
-                        l.lua_pop(L, 1);
-                    }
-                }
-                l.lua_pop(L, 1);
-
-                var guest_offsets = std.ArrayList(u8).init(allocator);
-                defer guest_offsets.deinit();
-                try guest_offsets.appendSlice("#ifndef GUEST_OFFSETS_H\n#define GUEST_OFFSETS_H\n\n");
-                var current_offset: usize = 0;
-
-                var bound_paths = std.StringHashMap(void).init(allocator);
-                defer {
-                    var bit = bound_paths.keyIterator();
-                    while (bit.next()) |k| allocator.free(k.*);
-                    bound_paths.deinit();
-                }
 
                 inline for (.{ "reads", "writes" }) |field| {
                     l.lua_getfield(L, -1, field);
@@ -547,15 +385,6 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
 
                             if (orch.getWire(wire_path)) |w| {
                                 n.bindWire(wire_ref, w, access);
-                                
-                                if (!bound_paths.contains(wire_path)) {
-                                    try bound_paths.put(try allocator.dupe(u8, wire_path), {});
-                                    const safe_ref = try allocator.dupe(u8, wire_ref);
-                                    defer allocator.free(safe_ref);
-                                    for (safe_ref) |*char| if (char.* == '.') { char.* = '_'; };
-                                    try guest_offsets.writer().print("#define OFFSET_{s} 0x{X}\n", .{ safe_ref, current_offset });
-                                    current_offset += (w.size + 15) & ~@as(usize, 15);
-                                }
                             }
                             l.lua_pop(L, 1);
                         }
@@ -563,16 +392,8 @@ fn reloadTopology(allocator: std.mem.Allocator, orch: *orchestrator.Orchestrator
                     l.lua_pop(L, 1);
                 }
 
-                // FINALIZE: Set real script path so it loads after wires are bound
                 allocator.free(n.script_path);
                 n.script_path = try allocator.dupe(u8, n_script);
-
-                try guest_offsets.appendSlice("\n#endif\n");
-                if (std.mem.eql(u8, ext_type, "wasm")) {
-                    const offset_filename = try std.fmt.allocPrint(allocator, "gen/{s}_offsets.h", .{n_name});
-                    defer allocator.free(offset_filename);
-                    try std.fs.cwd().writeFile(.{ .sub_path = offset_filename, .data = guest_offsets.items });
-                }
 
                 l.lua_pop(L, 1); 
             }

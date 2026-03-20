@@ -130,13 +130,13 @@ export fn destroy_node(handle: abi.moontide_node_h) void {
     const node: *InspectorNode = @ptrCast(@alignCast(handle));
     node.deinit();
 }
-
-export fn bind_wire(handle: abi.moontide_node_h, name: [*c]const u8, ptr: ?*anyopaque, access: usize) abi.moontide_status_t {
-    _ = handle; _ = name; _ = ptr; _ = access;
+export fn bind_wire(handle: abi.moontide_node_h, name: [*c]const u8, ptr: ?*anyopaque, schema_str: [*c]const u8, access: usize) abi.moontide_status_t {
+    _ = handle; _ = name; _ = ptr; _ = schema_str; _ = access;
     return abi.MOONTIDE_STATUS_OK;
 }
 
-export fn tick(handle: abi.moontide_node_h) abi.moontide_status_t {
+export fn tick(handle: abi.moontide_node_h, pulse_count: u64) abi.moontide_status_t {
+    _ = pulse_count;
     const node: *InspectorNode = @ptrCast(@alignCast(handle));
     node.draw();
     return abi.MOONTIDE_STATUS_OK;

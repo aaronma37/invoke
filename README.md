@@ -1,74 +1,61 @@
-# Moontide: The AI-Native DAG Runtime
+# Moontide Neural: The Silicon Brain Motherboard
 
-**Stop building monoliths. Start sculpting data-flow.**
+**Stop building monoliths. Start simulating state.**
 
-Moontide is a high-performance, **Data-Oriented DAG (Directed Acyclic Graph)** runtime engine. It is designed to be the "Silicon Motherboard" for AI-generated software, replacing traditional monolithic architectures with a physically isolated, deterministic assembly line.
-
----
-
-## 💎 Features & Subfeatures
-
-### 1. The Indestructible Core (Silicon Armor)
-The Zig-based kernel is a high-security host that treats code as hostile and data as sacred.
-*   **Silicon Gating:** Hardware-level memory protection via `mprotect`. Nodes can only touch the wires they are explicitly connected to.
-*   **Guard Pages:** Every data wire is separated by a 4KB `PROT_NONE` "dead zone." Any buffer overflow triggers an immediate, recoverable hardware fault.
-*   **Indestructible Heartbeat:** Robust signal recovery using `setjmp/longjmp`. The engine survives segfaults and memory violations in user logic.
-*   **Execution Watchdog:** A background sentry that monitors node budget. Nodes that hang or exceed their 100ms cycle are forcibly terminated.
-*   **Node Jailing (Strike System):** Broken nodes are given "strikes." After 3 failures, they are jailed (disabled) to protect the heartbeat until hot-swapped.
-
-### 2. The Eternal Library (Persistence)
-State in Moontide is "Eternal"—it lives outside the logic nodes and persists across reloads and sessions.
-*   **Eternal Data (Wires):** Page-aligned, raw memory buffers mapped directly to C-ABI structs.
-*   **Binary Snapshots (`.tide` files):** Instant serialization of the entire machine state to disk.
-*   **Deep Persistence:** Bit-perfect Save/Load functionality. Restore a 100,000-entity simulation to the exact CPU state in milliseconds.
-*   **Schema Evolution:** Change your data layout mid-execution. The kernel automatically detects shifts and migrates existing data to the new schema without a restart.
-*   **Type-Change Integrity:** Protection against "Ghost Data." The kernel clears/re-initializes wires if the schema string changes, even if the size remains the same.
-
-### 3. Deterministic Flow (The Assembly Line)
-The Moontide scheduler turns your CPU into a rhythmic assembly line.
-*   **Multicore DAG Scheduler:** Automatic topological sorting of nodes. Independent systems run in parallel on all available cores.
-*   **The Shifting Tide (Double-Buffering):** Nodes read from the "Front" bank and write to the "Back" bank. No mutexes or locks are ever required.
-*   **Write-Exclusivity Enforcement:** The scheduler prevents non-determinism by ensuring only one node can write to a specific wire in any parallel level.
-*   **Bit-Perfect Replication:** 100% deterministic output. Running the same sim with the same seed results in identical binary state across different machines.
-
-### 4. AI-Native Workflow (Token Efficiency)
-Designed specifically for the era of "Vibe Coding" and LLM-driven development.
-*   **Context Isolation:** Radical reduction in LLM context requirements. A worker AI only needs the Wire Schema and the Node logic, not the whole repo.
-*   **Programmatic Topology:** Define your architecture in Lua. Use loops and logic to procedurally generate massive parallel worlds.
-*   **Real-Time Sculpting:** Instant hot-reloading. Save a script or update the topology and see the changes reflected in the running engine instantly.
-*   **Cross-Namespace Messaging (`moontide.poke`):** A thread-safe, global event bus for decentralized system communication.
-
-### 5. Polyglot Handshake (Universal Socket)
-Moontide is a platform-agnostic socket for the existing software ecosystem.
-*   **Stable C-ABI:** A permanent handshake contract between the kernel and logic nodes.
-*   **LuaJIT Runtime:** Native-speed logic with the flexibility of a scripting language.
-*   **WASM Runtime:** Sandboxed, high-performance execution using Wasmtime.
-*   **Global SDK Distribution:** `moontide sdk install` makes Moontide a first-class citizen of your operating system.
+Moontide Neural is a high-performance, **Synchronous Pulse** runtime engine designed for **Liquid State Machines (LSM)** and **Spiking Neural Networks (SNN)**. It turns the raw silicon of the AMD Zen 5 (AVX-512) into a deterministic, physically isolated assembly line for biological-scale intelligence.
 
 ---
 
-## 🏁 Quick Start
+## 🧠 The Singular Vision
+Moontide rejects the "Transformer/Dense-Matrix" paradigm. Instead, it treats the CPU as a synchronous pulse generator where logic is a "Ripple" and data is the "Liquid." By separating **Eternal Data (Wires)** from **Ephemeral Logic (Nodes)**, we enable a persistent, real-time brain that never stops rippling.
+
+---
+
+## 💎 Core Architectural Pillars
+
+### 1. Synchronous Pulse Scheduling (Clock Domains)
+Unlike traditional DAGs, Moontide Neural uses a **Synchronous Pulse Scheduler**.
+*   **Recurrence:** Native support for feedback loops (A <-> B) within a single heartbeat.
+*   **Deterministic Time:** Double-buffered wires ensure all neurons see a consistent "Last Tick" state, providing bit-perfect temporal accuracy across 32+ threads.
+*   **Zen 5 Affinity:** Threads are pinned to specific CCDs (Chiplet Complexes) to keep the "Liquid" state entirely within the 64MB L3 cache of the 9950X.
+
+### 2. Eternal Synaptic Fabric (Wires)
+State in Moontide is "Eternal"—it lives outside the logic nodes and persists across reloads.
+*   **Sparse Wires:** Optimized for the random-access patterns of synaptic connections.
+*   **Silicon Armor:** Hardware-level memory protection (`mprotect`) ensures a single broken synapse triggers a recoverable fault rather than a system crash.
+*   **AVX-512 Gathering:** Native Zig SDK support for 512-bit "Gather/Scatter" operations, allowing the update of 16-32 neurons in a single CPU clock cycle.
+
+### 3. Asynchronous Plasticity (Dual-Speed Brain)
+Moontide formalizes the separation of **Inference** and **Learning**.
+*   **The Fast Path (Thinking):** High-frequency (1000Hz+) nodes simulating "Leaky Integrate-and-Fire" physics.
+*   **The Slow Path (Learning):** Background nodes calculating **STDP (Spike-Timing-Dependent Plasticity)** without blocking the inference heartbeat.
+
+### 4. Adaptive Settling (Variable Pulse)
+The engine moves beyond fixed frame rates. Nodes can signal the orchestrator that the "Liquid has not yet settled," allowing for variable-length computation cycles based on the complexity of the input spike.
+
+---
+
+## 🏁 Technical Edge (Why AMD?)
+Moontide Neural is built to exploit the specific architectural traits of **Zen 5 (9950X)**:
+*   **AVX-512 Native Path:** Processing 16 floats per instruction per core.
+*   **L3 Cache Dominance:** Keeping the entire 100,000+ neuron reservoir within the high-speed cache.
+*   **HSA (Heterogeneous System Architecture):** Zero-copy pointer sharing between the CPU Brain and the GPU Readout.
+
+---
+
+## 🚀 Getting Started
 
 ### 1. Build and Install
 ```bash
-# Build the kernel and extensions
 zig build
-
-# Install the SDK and standard runtimes globally
 sudo ./zig-out/bin/moontide sdk install
 ```
 
-### 2. Scaffold a New Project
+### 2. Run the Spiking Pulse Test
 ```bash
-mkdir my_sim && cd my_sim
-moontide init
-```
-
-### 3. Run a Simulation
-```bash
-# Execute the high-performance parallel boids simulation
-moontide run examples/boids/topology.lua
+# Execute a basic liquid reservoir simulation on AVX-512
+moontide run examples/neural/reservoir_topology.lua
 ```
 
 ---
-*Logic is Ephemeral, Data is Eternal. The Moontide is Deterministic.*
+*Logic is the Ripple, Data is the Liquid. The Moontide is Deterministic.*

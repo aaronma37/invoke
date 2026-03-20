@@ -2,9 +2,9 @@ local ffi = require("ffi")
 require("gen_wires")
 
 function tick()
-    local w = ffi.cast("test_ns_test_wire_t*", wire_test_wire)
-    w.x = 1.0
-    w.y = 2.0
+    -- wire_test_wire is now a TABLE of pointers (SOA View)
+    -- provided by the luajit extension.
+    wire_test_wire.x[0] = 1.0
+    wire_test_wire.y[0] = 2.0
     moontide.log("Test Node Ticked!")
-    -- poke("test_event") -- We can test poke too
 end

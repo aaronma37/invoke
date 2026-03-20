@@ -184,6 +184,16 @@ pub const SchemaIterator = struct {
 
 pub fn generateCStruct(allocator: std.mem.Allocator, name: []const u8, schema_str: []const u8) ![]const u8 {
     var list = std.ArrayList(u8).init(allocator);
+    
+    // Replace dots with underscores for valid C identifier
+    const safe_name = try allocator.dupe(u8, name);
+    defer allocator.free(safe_name);
+    for (safe_name) |*c| if (c.* == '.') { c.* = '_'; };
+
+    // --- ENFORCED SOA VIEW ---
+    // Instead of mapping the wire memory 1:1, we generate a 'View' struct.
+    // Every field is a pointer. This forces the logic to be layout-agnostic
+    // and encourages SOA access patterns.
     try list.writer().print("typedef struct {{\n", .{});
     
     var it = std.mem.tokenizeAny(u8, schema_str, ";");
@@ -193,10 +203,8 @@ pub fn generateCStruct(allocator: std.mem.Allocator, name: []const u8, schema_st
         const f_type_raw = parts.next() orelse continue;
         
         var f_type = f_type_raw;
-        var array_part: []const u8 = "";
         if (std.mem.indexOf(u8, f_type_raw, "[")) |idx| {
             f_type = f_type_raw[0..idx];
-            array_part = f_type_raw[idx..];
         }
 
         const c_type = if (std.mem.eql(u8, f_type, "f32")) "float"
@@ -207,15 +215,11 @@ pub fn generateCStruct(allocator: std.mem.Allocator, name: []const u8, schema_st
                   else if (std.mem.eql(u8, f_type, "char")) "char"
                   else "uint8_t";
                   
-        try list.writer().print("    {s} {s}{s};\n", .{ c_type, f_name, array_part });
+        // Every field is now a pointer to the start of its column in the wire.
+        try list.writer().print("    {s}* {s};\n", .{ c_type, f_name });
     }
-    
-    // Replace dots with underscores for valid C identifier
-    const safe_name = try allocator.dupe(u8, name);
-    defer allocator.free(safe_name);
-    for (safe_name) |*c| if (c.* == '.') { c.* = '_'; };
-
     try list.writer().print("}} {s}_t;\n\n", .{safe_name});
+
     return list.toOwnedSlice();
 }
 
@@ -230,8 +234,8 @@ test "generateCStruct" {
     defer allocator.free(c_struct);
 
     try std.testing.expect(std.mem.indexOf(u8, c_struct, "typedef struct {") != null);
-    try std.testing.expect(std.mem.indexOf(u8, c_struct, "int32_t count;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, c_struct, "float px[1000];") != null);
+    try std.testing.expect(std.mem.indexOf(u8, c_struct, "int32_t* count;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, c_struct, "float* px;") != null);
     try std.testing.expect(std.mem.indexOf(u8, c_struct, "} swarm_boids_t;") != null);
 }
 
