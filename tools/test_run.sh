@@ -1,16 +1,16 @@
 #!/bin/bash
 set -e
 
-# 1. Download Test Model (Stanford Bunny)
-if [ ! -f "bunny.obj" ] || grep -q "404" bunny.obj; then
-    echo "Downloading Stanford Bunny OBJ..."
-    curl -L https://raw.githubusercontent.com/alecjacobson/common-3d-test-models/master/bunny.obj -o bunny.obj
+# 1. Download Test Model (Spot the Cow)
+if [ ! -f "spot.obj" ] || grep -q "404" spot.obj; then
+    echo "Downloading Spot the Cow OBJ..."
+    curl -L https://raw.githubusercontent.com/alecjacobson/common-3d-test-models/master/spot.obj -o spot.obj
 fi
 
 # 2. Run Mooncrust GPU Sampler
 echo "Running Mooncrust GPU Sampler..."
 cd extensions/mooncrust
-SDL_VIDEODRIVER=offscreen timeout 15s ./build/mooncrust examples/54_objaverse_sampler ../../bunny.obj ../../bunny_sample.pcb
+SDL_VIDEODRIVER=offscreen timeout 15s ./build/mooncrust examples/54_objaverse_sampler ../../spot.obj ../../bunny_sample.pcb
 cd ../..
 
 # 3. Run Moontide KAN Trainer (using a new test script)
