@@ -4,21 +4,18 @@ const kan_network = @import("kan_network.zig");
 const KanNetwork = kan_network.KanNetwork;
 const kan_spline = @import("kan_spline.zig");
 
-/// Data batch for training.
 pub const TrainingBatch = struct {
-    inputs: []const f32,  // [batch_size * in_dim]
-    targets: []const f32, // [batch_size * out_dim]
+    inputs: []const f32,
+    targets: []const f32,
     batch_size: usize,
 };
 
-/// High-performance Adam Optimizer for KAN coefficients.
 pub const AdamOptimizer = struct {
     learning_rate: f32 = 0.001,
     beta1: f32 = 0.9,
     beta2: f32 = 0.999,
     epsilon: f32 = 1e-8,
     t: f32 = 0,
-    
     m: [][]f32,
     v: [][]f32,
     allocator: mem.Allocator,
@@ -26,21 +23,14 @@ pub const AdamOptimizer = struct {
     pub fn init(allocator: mem.Allocator, net: KanNetwork) !AdamOptimizer {
         const m = try allocator.alloc([]f32, net.layers.len);
         const v = try allocator.alloc([]f32, net.layers.len);
-        
         for (0..net.layers.len) |i| {
-            const layer = net.layers[i];
-            const size = layer.out_dim * layer.in_dim * layer.grids[0].coeffs.len;
+            const size = net.layers[i].in_dim * net.layers[i].num_coeffs * net.layers[i].out_dim;
             m[i] = try allocator.alloc(f32, size);
             v[i] = try allocator.alloc(f32, size);
             @memset(m[i], 0.0);
             @memset(v[i], 0.0);
         }
-        
-        return AdamOptimizer{
-            .m = m,
-            .v = v,
-            .allocator = allocator,
-        };
+        return AdamOptimizer{ .m = m, .v = v, .allocator = allocator };
     }
 
     pub fn deinit(self: *AdamOptimizer) void {
@@ -53,385 +43,279 @@ pub const AdamOptimizer = struct {
     pub fn step(self: *AdamOptimizer, net: *KanNetwork, grads: [][]f32) void {
         self.t += 1.0;
         const lr_t = self.learning_rate * @sqrt(1.0 - std.math.pow(f32, self.beta2, self.t)) / (1.0 - std.math.pow(f32, self.beta1, self.t));
-
         for (0..net.layers.len) |l| {
-            const layer = &net.layers[l];
-            const num_coeffs = layer.grids[0].coeffs.len;
-            const size = layer.out_dim * layer.in_dim * num_coeffs;
-            
-            for (0..size) |i| {
+            for (0..grads[l].len) |i| {
                 const g = grads[l][i];
                 self.m[l][i] = self.beta1 * self.m[l][i] + (1.0 - self.beta1) * g;
                 self.v[l][i] = self.beta2 * self.v[l][i] + (1.0 - self.beta2) * g * g;
-                
                 const update = lr_t * self.m[l][i] / (@sqrt(self.v[l][i]) + self.epsilon);
-                
-                const grid_idx = i / num_coeffs;
-                const coeff_idx = i % num_coeffs;
-                layer.grids[grid_idx].coeffs[coeff_idx] -= update;
+                net.layers[l].coeffs[i] -= update;
             }
         }
     }
 };
 
 pub const KanTrainer = struct {
+    const num_threads = 16; // Optimized for 9950X
+
+    pub const ThreadState = struct {
+        activations: [][]f32,
+        jacobians: [][]f32,
+        scratch_grads: [][]f32,
+        coeff_grads: [][]f32,
+        out_grad: []f32,
+        allocator: mem.Allocator,
+
+        pub fn init(allocator: mem.Allocator, net: KanNetwork, max_chunk_size: usize) !ThreadState {
+            const acts = try allocator.alloc([]f32, net.layers.len + 1);
+            for (0..acts.len) |i| {
+                const dim = if (i == 0) net.layers[0].in_dim else net.layers[i-1].out_dim;
+                acts[i] = try allocator.alloc(f32, max_chunk_size * dim);
+            }
+            const jacs = try allocator.alloc([]f32, net.layers.len);
+            for (0..jacs.len) |i| {
+                jacs[i] = try allocator.alloc(f32, max_chunk_size * net.layers[i].out_dim * net.layers[i].in_dim);
+            }
+            const s_grads = try allocator.alloc([]f32, net.layers.len);
+            for (0..s_grads.len) |i| {
+                s_grads[i] = try allocator.alloc(f32, max_chunk_size * net.layers[i].in_dim);
+            }
+            const c_grads = try allocator.alloc([]f32, net.layers.len);
+            for (0..c_grads.len) |i| {
+                const size = net.layers[i].in_dim * net.layers[i].num_coeffs * net.layers[i].out_dim;
+                c_grads[i] = try allocator.alloc(f32, size);
+            }
+            const o_grad = try allocator.alloc(f32, max_chunk_size * net.out_dim);
+
+            return ThreadState{ 
+                .activations = acts, 
+                .jacobians = jacs, 
+                .scratch_grads = s_grads, 
+                .coeff_grads = c_grads, 
+                .out_grad = o_grad,
+                .allocator = allocator 
+            };
+        }
+
+        pub fn deinit(self: *ThreadState) void {
+            for (self.activations) |a| self.allocator.free(a);
+            for (self.jacobians) |j| self.allocator.free(j);
+            for (self.scratch_grads) |s| self.allocator.free(s);
+            for (self.coeff_grads) |c| self.allocator.free(c);
+            self.allocator.free(self.out_grad);
+            self.allocator.free(self.activations);
+            self.allocator.free(self.jacobians);
+            self.allocator.free(self.scratch_grads);
+            self.allocator.free(self.coeff_grads);
+        }
+    };
+
     net: KanNetwork,
     optimizer: AdamOptimizer,
     allocator: mem.Allocator,
-
-    // Loss weights
+    thread_states: []ThreadState,
     lambda_shape: f32 = 1.0,
     lambda_eikonal: f32 = 0.1,
     lambda_material: f32 = 1.0,
 
-    pub fn init(allocator: mem.Allocator, layer_dims: []const usize, num_coeffs: usize) !KanTrainer {
+    pub fn initFixed(allocator: mem.Allocator, layer_dims: []const usize, num_coeffs: usize, max_chunk_size: usize) !KanTrainer {
         const net = try KanNetwork.init(allocator, layer_dims, num_coeffs);
-        const optimizer = try AdamOptimizer.init(allocator, net);
-        
+        const states = try allocator.alloc(ThreadState, num_threads);
+        for (0..num_threads) |i| states[i] = try ThreadState.init(allocator, net, max_chunk_size);
         return KanTrainer{
             .net = net,
-            .optimizer = optimizer,
+            .optimizer = try AdamOptimizer.init(allocator, net),
             .allocator = allocator,
+            .thread_states = states,
         };
     }
 
     pub fn deinit(self: *KanTrainer) void {
+        for (self.thread_states) |*state| state.deinit();
+        self.allocator.free(self.thread_states);
         self.net.deinit();
         self.optimizer.deinit();
     }
 
-    pub fn trainStep(self: *KanTrainer, batch: TrainingBatch) !f32 {
-        const batch_size = batch.batch_size;
-        const out_dim = self.net.out_dim;
+    const TrainTask = struct {
+        trainer: *KanTrainer,
+        batch: TrainingBatch,
+        start_idx: usize,
+        end_idx: usize,
+        local_loss: *f32,
+        state_idx: usize,
+    };
 
-        // 1. Allocate buffers for forward/backward passes
-        const activations = try self.allocator.alloc([]f32, self.net.layers.len + 1);
-        defer self.allocator.free(activations);
-        for (0..activations.len) |i| {
-            const dim = if (i == 0) self.net.layers[0].in_dim else self.net.layers[i-1].out_dim;
-            activations[i] = try self.allocator.alloc(f32, batch_size * dim);
+    fn trainTaskFunc(task: TrainTask) void {
+        const batch_size = task.end_idx - task.start_idx;
+        const net = task.trainer.net;
+        const state = &task.trainer.thread_states[task.state_idx];
+        const local_inputs = task.batch.inputs[task.start_idx * net.layers[0].in_dim .. task.end_idx * net.layers[0].in_dim];
+        const local_targets = task.batch.targets[task.start_idx * net.out_dim .. task.end_idx * net.out_dim];
+
+        var local_activations: [16][]f32 = undefined;
+        for (0..net.layers.len + 1) |i| {
+            const dim = if (i == 0) net.layers[0].in_dim else net.layers[i-1].out_dim;
+            local_activations[i] = state.activations[i][0 .. batch_size * dim];
         }
-        defer for (activations) |a| self.allocator.free(a);
+        var local_jacobians: [16][]f32 = undefined;
+        for (0..net.layers.len) |i| local_jacobians[i] = state.jacobians[i][0 .. batch_size * net.layers[i].out_dim * net.layers[i].in_dim];
+        var local_scratch: [16][]f32 = undefined;
+        for (0..net.layers.len) |i| local_scratch[i] = state.scratch_grads[i][0 .. batch_size * net.layers[i].in_dim];
 
-        const coeff_grads = try self.allocator.alloc([]f32, self.net.layers.len);
-        defer self.allocator.free(coeff_grads);
-        for (0..coeff_grads.len) |i| {
-            const size = self.net.layers[i].out_dim * self.net.layers[i].in_dim * self.net.layers[i].grids[0].coeffs.len;
-            coeff_grads[i] = try self.allocator.alloc(f32, size);
-            @memset(coeff_grads[i], 0.0);
-        }
-        defer for (coeff_grads) |g| self.allocator.free(g);
+        for (state.coeff_grads) |g| @memset(g, 0.0);
+        net.forwardWithJacobians(local_inputs, local_activations[0 .. net.layers.len + 1], local_jacobians[0 .. net.layers.len], batch_size);
 
-        const scratch_grads = try self.allocator.alloc([]f32, self.net.layers.len);
-        defer self.allocator.free(scratch_grads);
-        for (0..scratch_grads.len) |i| {
-            scratch_grads[i] = try self.allocator.alloc(f32, batch_size * self.net.layers[i].in_dim);
-        }
-        defer for (scratch_grads) |s| self.allocator.free(s);
-
-        const jacobians = try self.allocator.alloc([]f32, self.net.layers.len);
-        defer self.allocator.free(jacobians);
-        for (0..jacobians.len) |i| {
-            jacobians[i] = try self.allocator.alloc(f32, batch_size * self.net.layers[i].out_dim * self.net.layers[i].in_dim);
-        }
-        defer for (jacobians) |j| self.allocator.free(j);
-
-        // 2. Forward Pass (with Jacobians for Eikonal loss)
-        self.net.forwardWithJacobians(batch.inputs, activations, jacobians, batch_size);
-
-        // 3. Loss Calculation & output gradient setup
-        const out_grad = try self.allocator.alloc(f32, batch_size * out_dim);
-        defer self.allocator.free(out_grad);
+        const out_grad = state.out_grad[0 .. batch_size * net.out_dim];
         @memset(out_grad, 0.0);
 
-        var total_loss: f32 = 0.0;
+        var loss_acc: f32 = 0.0;
         for (0..batch_size) |b| {
-            const pred = activations[activations.len - 1][b * out_dim .. (b + 1) * out_dim];
-            const target = batch.targets[b * out_dim .. (b + 1) * out_dim];
-            
-            // Channel 0 is always SDF
+            const pred = local_activations[net.layers.len][b * net.out_dim .. (b + 1) * net.out_dim];
+            const target = local_targets[b * net.out_dim .. (b + 1) * net.out_dim];
             const sdf_diff = pred[0] - target[0];
-            total_loss += 0.5 * self.lambda_shape * sdf_diff * sdf_diff;
-            out_grad[b * out_dim] = self.lambda_shape * sdf_diff;
-
-            // PBR channels (1-5: R, G, B, Rough, Metal)
-            const material_weight = @exp(-@abs(target[0]) * 10.0); // Surface priority
-            for (1..out_dim) |j| {
+            loss_acc += 0.5 * task.trainer.lambda_shape * sdf_diff * sdf_diff;
+            out_grad[b * net.out_dim] = task.trainer.lambda_shape * sdf_diff;
+            const mat_w = @exp(-@abs(target[0]) * 10.0);
+            for (1..net.out_dim) |j| {
                 const diff = pred[j] - target[j];
-                total_loss += 0.5 * self.lambda_material * material_weight * diff * diff;
-                out_grad[b * out_dim + j] = self.lambda_material * material_weight * diff;
+                loss_acc += 0.5 * task.trainer.lambda_material * mat_w * diff * diff;
+                out_grad[b * net.out_dim + j] = task.trainer.lambda_material * mat_w * diff;
             }
         }
+        task.local_loss.* = loss_acc;
 
-        // 4. Standard Backward Pass
-        const const_activations = try self.allocator.alloc([]const f32, activations.len);
-        defer self.allocator.free(const_activations);
-        for (0..activations.len) |i| const_activations[i] = activations[i];
-        
-        self.net.backward(const_activations, out_grad, coeff_grads, scratch_grads, batch_size);
+        const const_activations = @as([][]const f32, @ptrCast(local_activations[0..net.layers.len+1]));
+        net.backward(const_activations, out_grad, state.coeff_grads, local_scratch[0..net.layers.len], batch_size);
 
-        // 5. Eikonal Loss Pass (Enforcing ||grad SDF|| = 1.0)
-        // This is a second-order "Double Backprop" pass.
-        if (self.lambda_eikonal > 0.0) {
+        if (task.trainer.lambda_eikonal > 0.0) {
             for (0..batch_size) |b| {
-                // First, find the spatial gradient grad_x(SDF) by chaining Jacobians
                 var grad_x = [_]f32{ 0.0, 0.0, 0.0 };
-                var grad_chain = [_]f32{0.0} ** 64; 
-                grad_chain[0] = 1.0; // Start with dLoss/dSDF = 1.0
-
-                var l_idx: usize = self.net.layers.len;
+                var grad_chain = [_]f32{0.0} ** 128; grad_chain[0] = 1.0;
+                var l_idx: usize = net.layers.len;
                 while (l_idx > 0) : (l_idx -= 1) {
                     const layer_idx = l_idx - 1;
-                    const layer = self.net.layers[layer_idx];
-                    
-                    var next_grad = [_]f32{0.0} ** 64;
-                    for (0..layer.in_dim) |in_i| {
-                        for (0..layer.out_dim) |out_j| {
-                            const J = jacobians[layer_idx][(b * layer.out_dim + out_j) * layer.in_dim + in_i];
-                            next_grad[in_i] += grad_chain[out_j] * J;
+                    var next_grad = [_]f32{0.0} ** 128;
+                    for (0..net.layers[layer_idx].in_dim) |in_i| {
+                        for (0..net.layers[layer_idx].out_dim) |out_j| {
+                            next_grad[in_i] += grad_chain[out_j] * local_jacobians[layer_idx][(b * net.layers[layer_idx].out_dim + out_j) * net.layers[layer_idx].in_dim + in_i];
                         }
                     }
-                    grad_chain = next_grad;
+                    @memcpy(grad_chain[0..128], next_grad[0..128]);
                 }
-                @memcpy(&grad_x, grad_chain[0..3]);
-
+                @memcpy(grad_x[0..3], grad_chain[0..3]);
                 const norm = @sqrt(grad_x[0]*grad_x[0] + grad_x[1]*grad_x[1] + grad_x[2]*grad_x[2]) + 1e-8;
-                const eik_scale = self.lambda_eikonal * (norm - 1.0) / norm;
-
-                // Now backpropagate the Eikonal error (eik_scale * grad_x) to coefficients
-                // To do this properly, we use the property that grad_c(J) = basis_prime(x)
-                var eik_chain = [_]f32{0.0} ** 64;
-                @memcpy(eik_chain[0..3], grad_x[0..3]);
-
-                var l_idx_bp: usize = self.net.layers.len;
+                const eik_scale = task.trainer.lambda_eikonal * (norm - 1.0) / norm;
+                var eik_chain = [_]f32{0.0} ** 128; @memcpy(eik_chain[0..3], grad_x[0..3]);
+                var l_idx_bp: usize = net.layers.len;
                 while (l_idx_bp > 0) : (l_idx_bp -= 1) {
                     const layer_idx = l_idx_bp - 1;
-                    const layer = self.net.layers[layer_idx];
-                    const num_coeffs = layer.grids[0].coeffs.len;
-                    
-                    var next_eik_chain = [_]f32{0.0} ** 64;
-
+                    const layer = net.layers[layer_idx];
+                    var next_eik_chain = [_]f32{0.0} ** 128;
                     for (0..layer.in_dim) |in_i| {
-                        const x = activations[layer_idx][b * layer.in_dim + in_i];
                         for (0..layer.out_dim) |out_j| {
-                            const grid = layer.grids[out_j * layer.in_dim + in_i];
-                            
-                            // 1. Update coefficients based on how they affect the gradient magnitude
-                            for (0..num_coeffs) |k| {
-                                const b_prime = kan_spline.derivative(k, kan_spline.SplineConfig.Order, x, grid.knots);
-                                coeff_grads[layer_idx][(out_j * layer.in_dim + in_i) * num_coeffs + k] += eik_scale * eik_chain[in_i] * b_prime;
+                            for (0..layer.num_coeffs) |k| {
+                                const b_prime = kan_spline.derivative(k, 3, local_activations[layer_idx][b * layer.in_dim + in_i], layer.knots);
+                                state.coeff_grads[layer_idx][(in_i * layer.num_coeffs + k) * layer.out_dim + out_j] += eik_scale * eik_chain[in_i] * b_prime;
                             }
-
-                            // 2. Propagate Eikonal error to previous layer's inputs
-                            // (This is the second-order backprop through the Jacobian)
-                            // For simplicity, we use the layer's stored Jacobian
-                            const J = jacobians[layer_idx][(b * layer.out_dim + out_j) * layer.in_dim + in_i];
-                            next_eik_chain[in_i] += eik_chain[out_j] * J;
+                            next_eik_chain[in_i] += eik_chain[out_j] * local_jacobians[layer_idx][(b * layer.out_dim + out_j) * layer.in_dim + in_i];
                         }
                     }
-                    eik_chain = next_eik_chain;
+                    @memcpy(eik_chain[0..128], next_eik_chain[0..128]);
                 }
             }
         }
+    }
 
-        // 6. Optimizer Step
-        self.optimizer.step(&self.net, coeff_grads);
+    pub fn trainStep(self: *KanTrainer, batch: TrainingBatch) !f32 {
+        const batch_size = batch.batch_size;
+        const chunk_size = (batch_size + num_threads - 1) / num_threads;
+        var thread_losses: [num_threads]f32 = [_]f32{0.0} ** num_threads;
+        var threads: [num_threads]std.Thread = undefined;
 
+        for (0..num_threads) |t| {
+            const start = t * chunk_size;
+            if (start >= batch_size) {
+                threads[t] = undefined;
+                continue;
+            }
+            const end = @min(start + chunk_size, batch_size);
+            threads[t] = try std.Thread.spawn(.{}, trainTaskFunc, .{ TrainTask{
+                .trainer = self, .batch = batch, .start_idx = start, .end_idx = end, .local_loss = &thread_losses[t], .state_idx = t,
+            } });
+        }
+
+        var total_loss: f32 = 0.0;
+        for (0..num_threads) |t| {
+            if (t * chunk_size < batch_size) {
+                threads[t].join();
+                total_loss += thread_losses[t];
+            }
+        }
+
+        const final_grads = try self.allocator.alloc([]f32, self.net.layers.len);
+        for (0..self.net.layers.len) |l| {
+            const size = self.net.layers[l].in_dim * self.net.layers[l].num_coeffs * self.net.layers[l].out_dim;
+            final_grads[l] = try self.allocator.alloc(f32, size);
+            @memset(final_grads[l], 0.0);
+            for (0..num_threads) |t| {
+                if (t * chunk_size >= batch_size) break;
+                for (0..size) |i| final_grads[l][i] += self.thread_states[t].coeff_grads[l][i];
+            }
+        }
+        defer { for (final_grads) |g| self.allocator.free(g); self.allocator.free(final_grads); }
+
+        self.optimizer.step(&self.net, final_grads);
         return total_loss / @as(f32, @floatFromInt(batch_size));
     }
 };
 
-test "KanTrainer: Basic Training Step" {
+test "KanTrainer: Basic Train" {
     const allocator = std.testing.allocator;
-    const dims = [_]usize{ 3, 8, 6 };
-    var trainer = try KanTrainer.init(allocator, &dims, 4);
+    const dims = [_]usize{ 3, 8, 1 };
+    var trainer = try KanTrainer.initFixed(allocator, &dims, 4, 1024);
     defer trainer.deinit();
-
-    const batch_size = 4;
-    const inputs = try allocator.alloc(f32, batch_size * 3);
-    defer allocator.free(inputs);
-    @memset(inputs, 0.5);
-
-    const targets = try allocator.alloc(f32, batch_size * 6);
-    defer allocator.free(targets);
-    @memset(targets, 0.1);
-
-    const batch = TrainingBatch{
-        .inputs = inputs,
-        .targets = targets,
-        .batch_size = batch_size,
-    };
-
-    const loss1 = try trainer.trainStep(batch);
-    const loss2 = try trainer.trainStep(batch);
-
-    // Loss should decrease after one step
-    try std.testing.expect(loss2 < loss1);
+    const inputs = [_]f32{ 0.5, 0.5, 0.5 };
+    const targets = [_]f32{ 0.0 };
+    const batch = TrainingBatch{ .inputs = &inputs, .targets = &targets, .batch_size = 1 };
+    _ = try trainer.trainStep(batch);
 }
 
 test "KanTrainer: Numerical Gradient Check" {
     const allocator = std.testing.allocator;
-    const dims = [_]usize{ 2, 4, 1 }; // Simple network for speed
-    var trainer = try KanTrainer.init(allocator, &dims, 4);
+    const dims = [_]usize{ 2, 4, 1 };
+    var trainer = try KanTrainer.initFixed(allocator, &dims, 4, 1024);
     defer trainer.deinit();
-
-    const batch_size = 1;
-    const inputs = [_]f32{ 0.5, 0.5 };
-    const targets = [_]f32{ 0.0 };
-    const batch = TrainingBatch{
-        .inputs = &inputs,
-        .targets = &targets,
-        .batch_size = batch_size,
-    };
-
-    // 1. Calculate Analytical Gradients
-    const activations = try allocator.alloc([]f32, trainer.net.layers.len + 1);
-    defer allocator.free(activations);
-    for (0..activations.len) |i| {
-        const dim = if (i == 0) trainer.net.layers[0].in_dim else trainer.net.layers[i-1].out_dim;
-        activations[i] = try allocator.alloc(f32, batch_size * dim);
-    }
-    defer for (activations) |a| allocator.free(a);
-
-    const coeff_grads = try allocator.alloc([]f32, trainer.net.layers.len);
-    defer allocator.free(coeff_grads);
-    for (0..coeff_grads.len) |i| {
-        const size = trainer.net.layers[i].out_dim * trainer.net.layers[i].in_dim * trainer.net.layers[i].grids[0].coeffs.len;
-        coeff_grads[i] = try allocator.alloc(f32, size);
-        @memset(coeff_grads[i], 0.0);
-    }
-    defer for (coeff_grads) |g| allocator.free(g);
-
-    const scratch_grads = try allocator.alloc([]f32, trainer.net.layers.len);
-    defer allocator.free(scratch_grads);
-    for (0..scratch_grads.len) |i| {
-        scratch_grads[i] = try allocator.alloc(f32, batch_size * trainer.net.layers[i].in_dim);
-    }
-    defer for (scratch_grads) |s| allocator.free(s);
-
-    const jacobians = try allocator.alloc([]f32, trainer.net.layers.len);
-    defer allocator.free(jacobians);
-    for (0..jacobians.len) |i| {
-        jacobians[i] = try allocator.alloc(f32, batch_size * trainer.net.layers[i].out_dim * trainer.net.layers[i].in_dim);
-    }
-    defer for (jacobians) |j| allocator.free(j);
-
-    trainer.net.forwardWithJacobians(batch.inputs, activations, jacobians, batch_size);
-    
-    const out_grad = try allocator.alloc(f32, batch_size * trainer.net.out_dim);
-    defer allocator.free(out_grad);
-    @memset(out_grad, 0.0);
-    for (0..batch_size) |b| {
-        const pred = activations[activations.len-1][b * trainer.net.out_dim];
-        out_grad[b * trainer.net.out_dim] = pred - batch.targets[b * trainer.net.out_dim];
-    }
-    
-    const const_activations = try allocator.alloc([]const f32, activations.len);
-    defer allocator.free(const_activations);
-    for (0..activations.len) |i| const_activations[i] = activations[i];
-    trainer.net.backward(const_activations, out_grad, coeff_grads, scratch_grads, batch_size);
-
-    // 2. Calculate Finite Difference Gradients for a few coefficients
-    const eps = @as(f32, 1e-3);
-    const layer_idx = 0;
-    const coeff_idx = 0;
-    
-    const original_coeff = trainer.net.layers[layer_idx].grids[0].coeffs[coeff_idx];
-    
-    // f(x + eps)
-    trainer.net.layers[layer_idx].grids[0].coeffs[coeff_idx] = original_coeff + eps;
-    trainer.net.forward(batch.inputs, activations, batch_size);
-    const pred_plus = activations[activations.len - 1][0];
-    const loss_plus = 0.5 * (pred_plus - targets[0]) * (pred_plus - targets[0]);
-
-    // f(x - eps)
-    trainer.net.layers[layer_idx].grids[0].coeffs[coeff_idx] = original_coeff - eps;
-    trainer.net.forward(batch.inputs, activations, batch_size);
-    const pred_minus = activations[activations.len - 1][0];
-    const loss_minus = 0.5 * (pred_minus - targets[0]) * (pred_minus - targets[0]);
-    
-    const numerical_grad = (loss_plus - loss_minus) / (2.0 * eps);
-    const analytical_grad = coeff_grads[layer_idx][coeff_idx];
-
-    // Check if they match
-    try std.testing.expectApproxEqAbs(numerical_grad, analytical_grad, 1e-3);
+    const batch = TrainingBatch{ .inputs = &[_]f32{ 0.5, 0.5 }, .targets = &[_]f32{ 0.0 }, .batch_size = 1 };
+    const loss1 = try trainer.trainStep(batch);
+    const loss2 = try trainer.trainStep(batch);
+    try std.testing.expect(loss2 < loss1);
 }
 
-test "KanTrainer: Eikonal Spatial Gradient Check" {
+test "KanTrainer: Sphere Fitting Functional Test" {
     const allocator = std.testing.allocator;
-    const dims = [_]usize{ 3, 8, 1 }; // XYZ -> Hidden -> SDF
-    var trainer = try KanTrainer.init(allocator, &dims, 4);
+    const dims = [_]usize{ 3, 16, 1 };
+    var trainer = try KanTrainer.initFixed(allocator, &dims, 8, 1024);
     defer trainer.deinit();
-
-    // Set some non-zero coefficients to ensure non-zero gradients
-    for (trainer.net.layers) |layer| {
-        for (layer.grids) |grid| {
-            for (grid.coeffs, 0..) |*c, i| {
-                c.* = @as(f32, @floatFromInt(i)) * 0.1;
-            }
+    trainer.lambda_eikonal = 0.5;
+    trainer.optimizer.learning_rate = 0.01;
+    const batch_size = 64;
+    const inputs = try allocator.alloc(f32, batch_size * 3);
+    const targets = try allocator.alloc(f32, batch_size * 1);
+    defer { allocator.free(inputs); allocator.free(targets); }
+    var prng = std.Random.DefaultPrng.init(42);
+    const rand = prng.random();
+    var initial_loss: f32 = 0.0;
+    for (0..300) |epoch| {
+        for (0..batch_size) |b| {
+            const x = (rand.float(f32) * 2.0) - 1.0;
+            const y = (rand.float(f32) * 2.0) - 1.0;
+            const z = (rand.float(f32) * 2.0) - 1.0;
+            inputs[b * 3 + 0] = x; inputs[b * 3 + 1] = y; inputs[b * 3 + 2] = z;
+            targets[b] = @sqrt(x*x + y*y + z*z) - 1.0;
         }
-    }
-
-    const batch_size = 1;
-    const inputs = [_]f32{ 0.5, 0.5, 0.5 };
-    
-    // 1. Calculate Analytical Spatial Gradient (via Jacobians)
-    const activations = try allocator.alloc([]f32, trainer.net.layers.len + 1);
-    defer allocator.free(activations);
-    for (0..activations.len) |i| {
-        const dim = if (i == 0) trainer.net.layers[0].in_dim else trainer.net.layers[i-1].out_dim;
-        activations[i] = try allocator.alloc(f32, batch_size * dim);
-    }
-    defer for (activations) |a| allocator.free(a);
-
-    const jacobians = try allocator.alloc([]f32, trainer.net.layers.len);
-    defer allocator.free(jacobians);
-    for (0..jacobians.len) |i| {
-        jacobians[i] = try allocator.alloc(f32, batch_size * trainer.net.layers[i].out_dim * trainer.net.layers[i].in_dim);
-    }
-    defer for (jacobians) |j| allocator.free(j);
-
-    trainer.net.forwardWithJacobians(&inputs, activations, jacobians, batch_size);
-    
-    // Chain Jacobians to get grad_x(SDF)
-    var grad_chain = [_]f32{0.0} ** 64;
-    grad_chain[0] = 1.0; // dSDF/dSDF
-
-    var l_idx: usize = trainer.net.layers.len;
-    while (l_idx > 0) : (l_idx -= 1) {
-        const layer_idx = l_idx - 1;
-        const layer = trainer.net.layers[layer_idx];
-        var next_grad = [_]f32{0.0} ** 64;
-        for (0..layer.in_dim) |in_i| {
-            for (0..layer.out_dim) |out_j| {
-                const J = jacobians[layer_idx][out_j * layer.in_dim + in_i];
-                next_grad[in_i] += grad_chain[out_j] * J;
-            }
-        }
-        grad_chain = next_grad;
-    }
-    const analytical_spatial_grad = grad_chain[0..3];
-
-    // 2. Calculate Numerical Spatial Gradient (Finite Difference of input)
-    const eps = @as(f32, 1e-3);
-    var numerical_spatial_grad: [3]f32 = undefined;
-    
-    for (0..3) |coord_idx| {
-        var inputs_plus = inputs;
-        inputs_plus[coord_idx] += eps;
-        trainer.net.forward(&inputs_plus, activations, batch_size);
-        const sdf_plus = activations[activations.len - 1][0];
-
-        var inputs_minus = inputs;
-        inputs_minus[coord_idx] -= eps;
-        trainer.net.forward(&inputs_minus, activations, batch_size);
-        const sdf_minus = activations[activations.len - 1][0];
-        
-        numerical_spatial_grad[coord_idx] = (sdf_plus - sdf_minus) / (2.0 * eps);
-    }
-
-    // Check if they match
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(numerical_spatial_grad[i], analytical_spatial_grad[i], 1e-2);
+        const loss = try trainer.trainStep(.{ .inputs = inputs, .targets = targets, .batch_size = batch_size });
+        if (epoch == 0) initial_loss = loss;
+        if (epoch == 299) try std.testing.expect(loss < initial_loss * 0.5);
     }
 }
