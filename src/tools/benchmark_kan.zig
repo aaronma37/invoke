@@ -27,9 +27,8 @@ pub fn main() !void {
 
     const batch = TrainingBatch{ .inputs = inputs, .targets = targets, .batch_size = batch_size };
 
-    // 1. Full Train Step (with Eikonal)
+    // 1. Full Train Step
     {
-        trainer.lambda_eikonal = 0.1;
         const start = std.time.nanoTimestamp();
         const iters = 10;
         for (0..iters) |_| {
@@ -37,12 +36,11 @@ pub fn main() !void {
         }
         const end = std.time.nanoTimestamp();
         const elapsed = @as(f64, @floatFromInt(end - start)) / 1e9;
-        std.debug.print("Full Step (w/ Eikonal): {d:0.3} ms per step ({d:0.2} Mpts/s)\n", .{ (elapsed / iters) * 1000.0, (@as(f64, @floatFromInt(batch_size * iters)) / elapsed) / 1e6 });
+        std.debug.print("Full Step: {d:0.3} ms per step ({d:0.2} Mpts/s)\n", .{ (elapsed / iters) * 1000.0, (@as(f64, @floatFromInt(batch_size * iters)) / elapsed) / 1e6 });
     }
 
-    // 2. Step without Eikonal
+    // 2. Step without Eikonal (deprecated, just running more)
     {
-        trainer.lambda_eikonal = 0.0;
         const start = std.time.nanoTimestamp();
         const iters = 100;
         for (0..iters) |_| {

@@ -51,7 +51,6 @@ pub fn main() !void {
     }
     defer trainer.deinit();
     
-    trainer.lambda_eikonal = if (use_eikonal) 0.1 else 0.0;
     trainer.optimizer.learning_rate = lr;
 
     const inputs = try allocator.alloc(f32, batch_size * 3);
