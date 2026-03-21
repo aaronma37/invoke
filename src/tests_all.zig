@@ -29,4 +29,5 @@ test {
     _ = @import("core/kan_network.zig");
     _ = @import("core/kan_trainer.zig");
     _ = @import("tests/pipeline_test.zig");
+    _ = @import("tests/integrity_test.zig");
 }
