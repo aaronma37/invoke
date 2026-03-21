@@ -78,13 +78,28 @@ pub const KanLayer = struct {
                     batch_out[j] += silu;
                 }
 
-                // 2. Accumulate spline values (Memory-contiguous inner loop over out_dim)
+                // 2. Accumulate spline values
                 for (0..num_active) |a| {
                     const b_val = b_vals[a];
                     const coeff_idx_start = layer_coeffs_base + k_indices[a] * self.out_dim;
                     const coeff_row = self.coeffs[coeff_idx_start .. coeff_idx_start + self.out_dim];
                     
-                    for (0..self.out_dim) |j| {
+                    var j: usize = 0;
+                    // Vectorized chunk processing
+                    const vec_len = 16;
+                    const V = @Vector(vec_len, f32);
+                    const b_vec = @as(V, @splat(b_val));
+                    
+                    while (j + vec_len <= self.out_dim) : (j += vec_len) {
+                        const c_vec: V = coeff_row[j .. j + vec_len][0..vec_len].*;
+                        var out_vec: V = batch_out[j .. j + vec_len][0..vec_len].*;
+                        out_vec += b_vec * c_vec;
+                        const out_slice: *[vec_len]f32 = batch_out[j .. j + vec_len][0..vec_len];
+                        out_slice.* = out_vec;
+                    }
+                    
+                    // Remainder
+                    while (j < self.out_dim) : (j += 1) {
                         batch_out[j] += b_val * coeff_row[j];
                     }
                 }
@@ -147,7 +162,28 @@ pub const KanLayer = struct {
                     const coeff_idx_start = layer_coeffs_base + k_indices[a] * self.out_dim;
                     const coeff_row = self.coeffs[coeff_idx_start .. coeff_idx_start + self.out_dim];
                     
-                    for (0..self.out_dim) |j| {
+                    var j: usize = 0;
+                    const vec_len = 16;
+                    const V = @Vector(vec_len, f32);
+                    const b_vec = @as(V, @splat(b_val));
+                    
+                    while (j + vec_len <= self.out_dim) : (j += vec_len) {
+                        const c_vec: V = coeff_row[j .. j + vec_len][0..vec_len].*;
+                        
+                        var out_vec: V = batch_out[j .. j + vec_len][0..vec_len].*;
+                        out_vec += b_vec * c_vec;
+                        batch_out[j .. j + vec_len][0..vec_len].* = out_vec;
+                        
+                        // Jacobian is strided by in_dim, so we can't easily vector-load it here
+                        // unless out_dim is contiguous. Wait, jacobian is [out_dim][in_dim] technically?
+                        // "batch_jac[j * self.in_dim + i] += b_prime * coeff;"
+                        // It's strided by in_dim. We'll do scalar for Jacobian for now to avoid gather/scatter.
+                        for (j .. j + vec_len) |v_j| {
+                            batch_jac[v_j * self.in_dim + i] += b_prime * coeff_row[v_j];
+                        }
+                    }
+                    
+                    while (j < self.out_dim) : (j += 1) {
                         const coeff = coeff_row[j];
                         batch_out[j] += b_val * coeff;
                         batch_jac[j * self.in_dim + i] += b_prime * coeff;
@@ -210,7 +246,28 @@ pub const KanLayer = struct {
                     const coeff_row = self.coeffs[coeff_idx_start .. coeff_idx_start + self.out_dim];
                     const coeff_grad_row = coeff_grads[coeff_idx_start .. coeff_idx_start + self.out_dim];
                     
-                    for (0..self.out_dim) |j| {
+                    var j: usize = 0;
+                    const vec_len = 16;
+                    const V = @Vector(vec_len, f32);
+                    const b_vec = @as(V, @splat(b_val));
+                    const bp_vec = @as(V, @splat(b_prime));
+                    
+                    var total_in_grad_vec = @as(V, @splat(0.0));
+                    
+                    while (j + vec_len <= self.out_dim) : (j += vec_len) {
+                        const og_vec: V = b_out_grad[j .. j + vec_len][0..vec_len].*;
+                        var c_grad_vec: V = coeff_grad_row[j .. j + vec_len][0..vec_len].*;
+                        
+                        c_grad_vec += og_vec * b_vec;
+                        coeff_grad_row[j .. j + vec_len][0..vec_len].* = c_grad_vec;
+                        
+                        const c_vec: V = coeff_row[j .. j + vec_len][0..vec_len].*;
+                        total_in_grad_vec += og_vec * bp_vec * c_vec;
+                    }
+                    
+                    total_in_grad += @reduce(.Add, total_in_grad_vec);
+                    
+                    while (j < self.out_dim) : (j += 1) {
                         const og = b_out_grad[j];
                         coeff_grad_row[j] += og * b_val;
                         total_in_grad += og * b_prime * coeff_row[j];
