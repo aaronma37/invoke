@@ -34,17 +34,17 @@ pub const DataLoader = struct {
         for (0..batch_size) |i| {
             const s = self.samples[rand.uintLessThan(usize, self.samples.len)];
             
-            // Map inputs based on in_dim
+            // Map inputs to AoS: [batch][dim]
             if (in_dim == 3) {
                 inputs[i * 3 + 0] = s.x;
                 inputs[i * 3 + 1] = s.y;
                 inputs[i * 3 + 2] = s.z;
             } else if (in_dim == 2) {
-                inputs[i * 2 + 0] = s.x; // maps to u
-                inputs[i * 2 + 1] = s.y; // maps to v
+                inputs[i * 2 + 0] = s.x;
+                inputs[i * 2 + 1] = s.y;
             }
             
-            // Map targets based on out_dim
+            // Map targets to AoS: [batch][dim]
             if (out_dim >= 1) targets[i * out_dim + 0] = s.sdf;
             if (out_dim >= 2) targets[i * out_dim + 1] = s.r;
             if (out_dim >= 3) targets[i * out_dim + 2] = s.g;

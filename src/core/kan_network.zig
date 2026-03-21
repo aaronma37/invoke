@@ -33,23 +33,19 @@ pub const KanNetwork = struct {
         self.allocator.free(self.layers);
     }
 
-    /// Forward pass through the entire network.
     pub fn forward(
         self: KanNetwork,
         inputs: []const f32,
         activations: [][]f32,
         batch_size: usize,
     ) void {
-        const size = batch_size * self.layers[0].in_dim;
-        if (activations[0].ptr != inputs.ptr) {
-            @memcpy(activations[0][0..size], inputs[0..size]);
-        }
+        var current_input = inputs;
         for (0..self.layers.len) |i| {
-            self.layers[i].forward(activations[i][0 .. batch_size * self.layers[i].in_dim], activations[i + 1][0 .. batch_size * self.layers[i].out_dim], batch_size);
+            self.layers[i].forward(current_input, activations[i + 1], batch_size);
+            current_input = activations[i + 1];
         }
     }
 
-    /// Forward pass that also stores Jacobians for each layer.
     pub fn forwardWithJacobians(
         self: KanNetwork,
         inputs: []const f32,
@@ -57,18 +53,18 @@ pub const KanNetwork = struct {
         jacobians: [][]f32,
         batch_size: usize,
     ) void {
-        @memcpy(activations[0], inputs[0..(batch_size * self.layers[0].in_dim)]);
+        var current_input = inputs;
         for (0..self.layers.len) |i| {
             self.layers[i].forwardWithDeriv(
-                activations[i],
+                current_input,
                 activations[i + 1],
                 jacobians[i],
                 batch_size,
             );
+            current_input = activations[i+1];
         }
     }
 
-    /// Backward pass through the entire network.
     pub fn backward(
         self: KanNetwork,
         activations: [][]const f32,
@@ -94,7 +90,6 @@ pub const KanNetwork = struct {
         }
     }
 
-    /// Serializes the trained network to a binary file.
     pub fn saveModel(self: KanNetwork, path: []const u8) !void {
         const file = try std.fs.cwd().createFile(path, .{});
         defer file.close();
@@ -112,7 +107,6 @@ pub const KanNetwork = struct {
         }
     }
 
-    /// Loads a trained network from a binary file.
     pub fn loadModel(allocator: mem.Allocator, path: []const u8) !KanNetwork {
         const file = try std.fs.cwd().openFile(path, .{});
         defer file.close();

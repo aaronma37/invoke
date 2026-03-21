@@ -39,11 +39,12 @@ test "Benchmark: Production-Sized Stress Test" {
     const num_coeffs = 8;
     
     std.debug.print("\nInitializing Production KAN: 3 -> 32 -> 32 -> 6 (coeffs: {d})\n", .{num_coeffs});
-    var trainer = try KanTrainer.initFixed(allocator, &dims, num_coeffs, 10000, .sdf);
+    var trainer = try KanTrainer.initFixed(allocator, &dims, num_coeffs, 100_000, .sdf);
     defer trainer.deinit();
 
-    const batch_size = 100_000;
+    const batch_size = 32_768;
     
+    // Allocate AoS buffers
     const inputs = try allocator.alloc(f32, batch_size * 3);
     const targets = try allocator.alloc(f32, batch_size * 6);
     defer allocator.free(inputs);
@@ -58,10 +59,10 @@ test "Benchmark: Production-Sized Stress Test" {
         .batch_size = batch_size,
     };
 
-    std.debug.print("Starting Benchmark (10 steps of 100k points)...\n", .{});
+    std.debug.print("Starting Benchmark (100 steps of 32k points)...\n", .{});
     
     const start_time = std.time.nanoTimestamp();
-    const num_iterations = 10;
+    const num_iterations = 100;
     
     for (0..num_iterations) |_| {
         _ = try trainer.trainStep(batch);

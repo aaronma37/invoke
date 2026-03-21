@@ -24,7 +24,7 @@ pub const AdamOptimizer = struct {
         const m = try allocator.alloc([]f32, net.layers.len);
         const v = try allocator.alloc([]f32, net.layers.len);
         for (0..net.layers.len) |i| {
-            const size = net.layers[i].in_dim * net.layers[i].num_coeffs * net.layers[i].out_dim;
+            const size = net.layers[i].in_dim * net.layers[i].num_coeffs * net.layers[i].out_dim_padded;
             m[i] = try allocator.alloc(f32, size);
             v[i] = try allocator.alloc(f32, size);
             @memset(m[i], 0.0);
@@ -43,11 +43,6 @@ pub const AdamOptimizer = struct {
     pub fn step(self: *AdamOptimizer, net: *KanNetwork, grads: [][]f32) void {
         self.t += 1;
         const lr_t = self.learning_rate * @sqrt(1.0 - std.math.pow(f32, self.beta2, self.t)) / (1.0 - std.math.pow(f32, self.beta1, self.t));
-
-        if (@as(usize, @intFromFloat(self.t)) % 500 == 0) {
-            std.debug.print("Optimizer Step {d}: Grad[0][0]={d:0.6}, m[0][0]={d:0.6}, v[0][0]={d:0.6}\n", 
-                .{self.t, grads[0][0], self.m[0][0], self.v[0][0]});
-        }
 
         for (0..net.layers.len) |l| {
             for (0..grads[l].len) |i| {
@@ -93,7 +88,7 @@ pub const KanTrainer = struct {
             }
             const c_grads = try allocator.alloc([]f32, net.layers.len);
             for (0..c_grads.len) |i| {
-                const size = net.layers[i].in_dim * net.layers[i].num_coeffs * net.layers[i].out_dim;
+                const size = net.layers[i].in_dim * net.layers[i].num_coeffs * net.layers[i].out_dim_padded;
                 c_grads[i] = try allocator.alloc(f32, size);
             }
             const o_grad = try allocator.alloc(f32, max_chunk_size * net.out_dim);
@@ -125,40 +120,66 @@ pub const KanTrainer = struct {
     optimizer: AdamOptimizer,
     allocator: mem.Allocator,
     thread_states: []ThreadState,
+    pool: *std.Thread.Pool, // MUST BE A POINTER to prevent move-invalidated mutexes
     task_type: TaskType = .sdf,
     lambda_shape: f32 = 1.0,
     lambda_l2: f32 = 0.0001,
 
-    pub fn initFixed(allocator: mem.Allocator, layer_dims: []const usize, num_coeffs: usize, max_chunk_size: usize, task: TaskType) !KanTrainer {
+    pub fn initFixed(allocator: mem.Allocator, layer_dims: []const usize, num_coeffs: usize, max_chunk_size: usize, task: TaskType) !*KanTrainer {
+        const self = try allocator.create(KanTrainer);
+        errdefer allocator.destroy(self);
+
         const net = try KanNetwork.init(allocator, layer_dims, num_coeffs);
         const states = try allocator.alloc(ThreadState, num_threads);
         for (0..num_threads) |i| states[i] = try ThreadState.init(allocator, net, max_chunk_size);
-        return KanTrainer{
+        
+        const pool = try allocator.create(std.Thread.Pool);
+        errdefer allocator.destroy(pool);
+        try pool.init(.{ .allocator = allocator, .n_jobs = num_threads });
+
+        self.* = KanTrainer{
             .net = net,
             .optimizer = try AdamOptimizer.init(allocator, net),
             .allocator = allocator,
             .thread_states = states,
+            .pool = pool,
             .task_type = task,
         };
+
+        return self;
     }
 
-    pub fn initWithNet(allocator: mem.Allocator, net: KanNetwork, max_chunk_size: usize, task: TaskType) !KanTrainer {
+    pub fn initWithNet(allocator: mem.Allocator, net: KanNetwork, max_chunk_size: usize, task: TaskType) !*KanTrainer {
+        const self = try allocator.create(KanTrainer);
+        errdefer allocator.destroy(self);
+
         const states = try allocator.alloc(ThreadState, num_threads);
         for (0..num_threads) |i| states[i] = try ThreadState.init(allocator, net, max_chunk_size);
-        return KanTrainer{
+        
+        const pool = try allocator.create(std.Thread.Pool);
+        errdefer allocator.destroy(pool);
+        try pool.init(.{ .allocator = allocator, .n_jobs = num_threads });
+
+        self.* = KanTrainer{
             .net = net,
             .optimizer = try AdamOptimizer.init(allocator, net),
             .allocator = allocator,
             .thread_states = states,
+            .pool = pool,
             .task_type = task,
         };
+
+        return self;
     }
 
     pub fn deinit(self: *KanTrainer) void {
+        self.pool.deinit(); 
+        self.allocator.destroy(self.pool);
         for (self.thread_states) |*state| state.deinit();
         self.allocator.free(self.thread_states);
         self.net.deinit();
         self.optimizer.deinit();
+        self.allocator.destroy(self);
     }
 
     const TrainTask = struct {
@@ -174,8 +195,9 @@ pub const KanTrainer = struct {
         const batch_size = task.end_idx - task.start_idx;
         const net = task.trainer.net;
         const state = &task.trainer.thread_states[task.state_idx];
-        const local_inputs = task.batch.inputs[task.start_idx * net.layers[0].in_dim .. task.end_idx * net.layers[0].in_dim];
-        const local_targets = task.batch.targets[task.start_idx * net.out_dim .. task.end_idx * net.out_dim];
+        
+        const local_inputs_aos = task.batch.inputs[task.start_idx * net.layers[0].in_dim .. task.end_idx * net.layers[0].in_dim];
+        const local_targets_aos = task.batch.targets[task.start_idx * net.out_dim .. task.end_idx * net.out_dim];
 
         var local_activations: [16][]f32 = undefined;
         for (0..net.layers.len + 1) |i| {
@@ -187,100 +209,113 @@ pub const KanTrainer = struct {
 
         for (state.coeff_grads) |g| @memset(g, 0.0);
         
-        net.forward(local_inputs, local_activations[0 .. net.layers.len + 1], batch_size);
+        @memcpy(local_activations[0][0 .. batch_size * net.layers[0].in_dim], local_inputs_aos);
 
-        const out_grad = state.out_grad[0 .. batch_size * net.out_dim];
-        @memset(out_grad, 0.0);
+        net.forward(local_activations[0], local_activations[0 .. net.layers.len + 1], batch_size);
+
+        const out_dim = net.out_dim;
+        const final_acts_aos = local_activations[net.layers.len];
+        const out_grad_aos = state.out_grad[0 .. batch_size * out_dim];
+        @memset(out_grad_aos, 0.0);
 
         var loss_acc: f32 = 0.0;
         for (0..batch_size) |b| {
-            const pred = local_activations[net.layers.len][b * net.out_dim .. (b + 1) * net.out_dim];
-            const target = local_targets[b * net.out_dim .. (b + 1) * net.out_dim];
-            
-            // Objective-specific loss
-            switch (task.trainer.task_type) {
-                .sdf => {
-                    const diff = pred[0] - target[0];
-                    loss_acc += 0.5 * task.trainer.lambda_shape * diff * diff;
-                    out_grad[b * net.out_dim] = task.trainer.lambda_shape * diff;
-                },
-                .displacement => {
-                    // Displacement might have multiple channels (e.g. RGB or just scalar)
-                    for (0..net.out_dim) |d| {
-                        const diff = pred[d] - target[d];
-                        loss_acc += 0.5 * diff * diff;
-                        out_grad[b * net.out_dim + d] = diff;
-                    }
-                }
+            for (0..out_dim) |d| {
+                const pred = final_acts_aos[b * out_dim + d];
+                const target = local_targets_aos[b * out_dim + d];
+                const diff = pred - target;
+                const weight = if (task.trainer.task_type == .sdf) (if (d == 0) task.trainer.lambda_shape else 1.0) else 1.0;
+                loss_acc += 0.5 * weight * diff * diff;
+                out_grad_aos[b * out_dim + d] = weight * diff;
             }
         }
         task.local_loss.* = loss_acc;
 
         const const_activations = @as([][]const f32, @ptrCast(local_activations[0..net.layers.len+1]));
-        net.backward(const_activations, out_grad, state.coeff_grads, local_scratch[0..net.layers.len], batch_size);
+        net.backward(const_activations, out_grad_aos, state.coeff_grads, local_scratch[0..net.layers.len], batch_size);
     }
+
+    fn poolRunWrapper(wait_group: *std.Thread.WaitGroup, task: TrainTask) void {
+        defer wait_group.finish();
+        trainTaskFunc(task);
+    }
+
+    const ThreadLoss = struct {
+        val: f32,
+        _pad: [15]f32,
+    };
 
     pub fn trainStep(self: *KanTrainer, batch: TrainingBatch) !f32 {
         const batch_size = batch.batch_size;
-        
-        // Ensure all thread gradients are zeroed before starting
-        for (self.thread_states) |*ts| {
-            for (ts.coeff_grads) |cg| @memset(cg, 0.0);
-        }
-
         const chunk_size = (batch_size + num_threads - 1) / num_threads;
-        var thread_losses: [num_threads]f32 = [_]f32{0.0} ** num_threads;
-        var threads: [num_threads]std.Thread = undefined;
+        var thread_losses: [num_threads]ThreadLoss = undefined;
+        for (&thread_losses) |*tl| { tl.val = 0.0; }
+        
+        var wg = std.Thread.WaitGroup{};
 
         for (0..num_threads) |t| {
             const start = t * chunk_size;
             if (start >= batch_size) break;
             const end = @min(start + chunk_size, batch_size);
-            threads[t] = try std.Thread.spawn(.{}, trainTaskFunc, .{TrainTask{
+            
+            wg.start();
+            try self.pool.spawn(poolRunWrapper, .{ &wg, TrainTask{
                 .trainer = self,
                 .batch = batch,
                 .start_idx = start,
                 .end_idx = end,
-                .local_loss = &thread_losses[t],
+                .local_loss = &thread_losses[t].val,
                 .state_idx = t,
             }});
         }
 
+        wg.wait();
+
         var total_loss: f32 = 0.0;
         for (0..num_threads) |t| {
             if (t * chunk_size < batch_size) {
-                threads[t].join();
-                total_loss += thread_losses[t];
+                total_loss += thread_losses[t].val;
             }
         }
 
-        // Reduction: Sum and Normalize
-        const final_grads = try self.allocator.alloc([]f32, self.net.layers.len);
         for (0..self.net.layers.len) |l| {
-            const size = self.net.layers[l].in_dim * self.net.layers[l].num_coeffs * self.net.layers[l].out_dim;
-            final_grads[l] = try self.allocator.alloc(f32, size);
-            @memset(final_grads[l], 0.0);
+            const size = self.net.layers[l].in_dim * self.net.layers[l].num_coeffs * self.net.layers[l].out_dim_padded;
+            const target_coeffs = self.net.layers[l].coeffs;
+            const accumulator = self.thread_states[0].coeff_grads[l];
             
-            for (0..num_threads) |t| {
+            for (1..num_threads) |t| {
                 if (t * chunk_size >= batch_size) break;
                 const src = self.thread_states[t].coeff_grads[l];
-                for (0..size) |i| {
-                    final_grads[l][i] += src[i];
+                var i: usize = 0;
+                const vec_len = 16;
+                const V = @Vector(vec_len, f32);
+                while (i + vec_len <= size) : (i += vec_len) {
+                    const v_src: V = src[i..i+vec_len][0..vec_len].*;
+                    var v_acc: V = accumulator[i..i+vec_len][0..vec_len].*;
+                    v_acc += v_src;
+                    accumulator[i..i+vec_len][0..vec_len].* = v_acc;
                 }
+                while (i < size) : (i += 1) { accumulator[i] += src[i]; }
             }
 
-            // NORMALIZE BY BATCH SIZE + L2
             const inv_batch = 1.0 / @as(f32, @floatFromInt(batch_size));
-            for (0..size) |i| {
-                const g = final_grads[l][i] * inv_batch;
-                const l2 = self.net.layers[l].coeffs[i] * self.lambda_l2;
-                final_grads[l][i] = g + l2;
+            var i: usize = 0;
+            const vec_len = 16;
+            const V = @Vector(vec_len, f32);
+            const v_inv = @as(V, @splat(inv_batch));
+            const v_l2 = @as(V, @splat(self.lambda_l2));
+
+            while (i + vec_len <= size) : (i += vec_len) {
+                const v_grad: V = accumulator[i..i+vec_len][0..vec_len].*;
+                const v_coeffs: V = target_coeffs[i..i+vec_len][0..vec_len].*;
+                accumulator[i..i+vec_len][0..vec_len].* = (v_grad * v_inv) + (v_coeffs * v_l2);
+            }
+            while (i < size) : (i += 1) {
+                accumulator[i] = (accumulator[i] * inv_batch) + (target_coeffs[i] * self.lambda_l2);
             }
         }
 
-        defer { for (final_grads) |g| self.allocator.free(g); self.allocator.free(final_grads); }
-
-        self.optimizer.step(&self.net, final_grads);
+        self.optimizer.step(&self.net, self.thread_states[0].coeff_grads);
         return total_loss / @as(f32, @floatFromInt(batch_size));
     }
 };
