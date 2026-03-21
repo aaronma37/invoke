@@ -20,7 +20,7 @@ pub fn main() !void {
     }
 
     const pcb_path = args[1];
-    const epochs = if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 1000;
+    const epochs = if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 10000;
     const batch_size = if (args.len > 3) try std.fmt.parseInt(usize, args[3], 10) else 10000;
     const lr = if (args.len > 4) try std.fmt.parseFloat(f32, args[4]) else 0.001;
 
@@ -33,10 +33,11 @@ pub fn main() !void {
     var loader = try DataLoader.init(allocator, pcb_path);
     defer loader.deinit();
 
-    const dims = [_]usize{ 3, 32, 32, 6 }; // Reverted back to 6 outputs
+    // High Capacity for Bunny: 3 -> 32 -> 32 -> 1
+    const dims = [_]usize{ 3, 32, 32, 1 }; 
     const num_coeffs = 16;
     
-    std.debug.print("Initializing KAN: 3 -> 32 -> 32 -> 6 (coeffs: {d}, eikonal: {s})\n", .{num_coeffs, if (use_eikonal) "ON" else "OFF"});
+    std.debug.print("Initializing KAN: 3 -> 32 -> 32 -> 1 (coeffs: {d}, eikonal: {s})\n", .{num_coeffs, if (use_eikonal) "ON" else "OFF"});
     var trainer = try KanTrainer.initFixed(allocator, &dims, num_coeffs, batch_size);
     defer trainer.deinit();
     
@@ -44,17 +45,18 @@ pub fn main() !void {
     trainer.optimizer.learning_rate = lr;
 
     const inputs = try allocator.alloc(f32, batch_size * 3);
-    const targets = try allocator.alloc(f32, batch_size * 6);
+    const targets = try allocator.alloc(f32, batch_size * 1);
     defer { allocator.free(inputs); allocator.free(targets); }
 
     var prng = std.Random.DefaultPrng.init(@as(u64, @intCast(std.time.timestamp())));
     
     var best_loss: f32 = 1e10;
 
-    std.debug.print("Starting training for {d} epochs (batch size: {d}, lr: {d:0.4})...\n", .{epochs, batch_size, lr});
+    std.debug.print("Starting training for {d} epochs (batch size: {d}, lr: {d:0.5})...\n", .{epochs, batch_size, lr});
     
     for (0..epochs) |epoch| {
-        loader.getBatch(batch_size, &prng, inputs, targets);
+        // Safe 1D fetch (prevents memory corruption)
+        loader.getBatch(batch_size, 1, &prng, inputs, targets);
         const batch = TrainingBatch{ .inputs = inputs, .targets = targets, .batch_size = batch_size };
         
         const loss = try trainer.trainStep(batch);

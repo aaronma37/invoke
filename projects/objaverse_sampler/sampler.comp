@@ -26,24 +26,35 @@ layout(set = 0, binding = 2) uniform Counts {
 
 float dot2(vec3 v) { return dot(v,v); }
 
-// Robust Squared Distance to Triangle (by IQ)
-float udTriangle(vec3 p, vec3 a, vec3 b, vec3 c) {
+// Returns squared distance and also the closest point 'cp'
+float udTriangle(vec3 p, vec3 a, vec3 b, vec3 c, out vec3 cp) {
     vec3 ba = b - a; vec3 pa = p - a;
     vec3 cb = c - b; vec3 pb = p - b;
     vec3 ac = a - c; vec3 pc = p - c;
     vec3 nor = cross(ba, ac);
 
-    return (sign(dot(cross(ba, nor), pa)) +
-            sign(dot(cross(cb, nor), pb)) +
-            sign(dot(cross(ac, nor), pc)) < 2.0)
-        ?
-        min(min(
-            dot2(ba * clamp(dot(ba, pa) / dot2(ba), 0.0, 1.0) - pa),
-            dot2(cb * clamp(dot(cb, pb) / dot2(cb), 0.0, 1.0) - pb)),
-            dot2(ac * clamp(dot(ac, pc) / dot2(ac), 0.0, 1.0) - pc)
-        )
-        :
-        dot(nor, pa) * dot(nor, pa) / dot2(nor);
+    if (sign(dot(cross(ba, nor), pa)) +
+        sign(dot(cross(cb, nor), pb)) +
+        sign(dot(cross(ac, nor), pc)) < 2.0) {
+        float d2_a = dot2(ba * clamp(dot(ba, pa) / dot2(ba), 0.0, 1.0) - pa);
+        float d2_b = dot2(cb * clamp(dot(cb, pb) / dot2(cb), 0.0, 1.0) - pb);
+        float d2_c = dot2(ac * clamp(dot(ac, pc) / dot2(ac), 0.0, 1.0) - pc);
+        
+        if (d2_a < d2_b && d2_a < d2_c) {
+            cp = a + ba * clamp(dot(ba, pa) / dot2(ba), 0.0, 1.0);
+            return d2_a;
+        } else if (d2_b < d2_c) {
+            cp = b + cb * clamp(dot(cb, pb) / dot2(cb), 0.0, 1.0);
+            return d2_b;
+        } else {
+            cp = c + ac * clamp(dot(ac, pc) / dot2(ac), 0.0, 1.0);
+            return d2_c;
+        }
+    } else {
+        float d = dot(nor, pa);
+        cp = p - nor * d / dot2(nor);
+        return d * d / dot2(nor);
+    }
 }
 
 void main() {
@@ -52,21 +63,32 @@ void main() {
 
     vec3 p = vec3(samples[idx].x, samples[idx].y, samples[idx].z);
     float min_dist_sq = 1e20;
-    vec3 closest_color = vec3(0.5);
+    vec3 closest_p = vec3(0.0);
+    vec3 best_normal = vec3(0.0);
 
-    // Naive O(N) loop - we only do this once per asset so it's fine for now
     for (uint i = 0; i < pc.tri_count; i++) {
-        float d2 = udTriangle(p, tris[i].v0.xyz, tris[i].v1.xyz, tris[i].v2.xyz);
+        vec3 cp;
+        float d2 = udTriangle(p, tris[i].v0.xyz, tris[i].v1.xyz, tris[i].v2.xyz, cp);
         if (d2 < min_dist_sq) {
             min_dist_sq = d2;
-            closest_color = tris[i].color.xyz;
+            closest_p = cp;
+            // Use the face normal for signing (assuming coherent mesh)
+            best_normal = normalize(cross(tris[i].v1.xyz - tris[i].v0.xyz, tris[i].v2.xyz - tris[i].v0.xyz));
         }
     }
 
-    samples[idx].sdf = sqrt(min_dist_sq);
-    samples[idx].r = closest_color.x;
-    samples[idx].g = closest_color.y;
-    samples[idx].b = closest_color.z;
+    float d = sqrt(min_dist_sq);
+    
+    // PSEUDONORMAL SIGNING
+    // If the vector from the surface to the point opposes the normal, we are inside.
+    if (dot(p - closest_p, best_normal) < 0.0) {
+        d = -d;
+    }
+
+    samples[idx].sdf = d;
+    samples[idx].r = 0.5;
+    samples[idx].g = 0.7;
+    samples[idx].b = 1.0;
     samples[idx].roughness = 0.5;
     samples[idx].metallic = 0.0;
 }

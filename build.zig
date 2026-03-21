@@ -198,6 +198,21 @@ pub fn build(b: *std.Build) void {
     const pcb_step = b.step("debug-kan", "Sample model.kan to kan_debug.pcb");
     pcb_step.dependOn(&pcb_run.step);
 
+    // KAN TO OBJ TOOL (Reconstruction)
+    const obj_exe = b.addExecutable(.{
+        .name = "kan-to-obj",
+        .root_source_file = b.path("src/tools/reconstruct.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
+        .optimize = optimize,
+    });
+    obj_exe.linkLibC();
+    obj_exe.root_module.addImport("kan", kan_mod);
+    b.installArtifact(obj_exe);
+
+    const obj_run = b.addRunArtifact(obj_exe);
+    const obj_step = b.step("reconstruct-kan", "Extract model.kan to bunny_reconstructed.obj");
+    obj_step.dependOn(&obj_run.step);
+
     // 7. RUN COMMAND
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
