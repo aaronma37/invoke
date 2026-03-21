@@ -12,7 +12,7 @@ pub const SplineConfig = struct {
 /// This replaces the recursive Cox-de Boor for massive performance gains.
 /// Assumes uniform knot spacing.
 pub fn basis(i: usize, p: usize, x: f32, knots: []const f32) f32 {
-    _ = p; // Always cubic
+    _ = p;
     const h = knots[1] - knots[0];
     const t = (x - knots[i]) / h;
 
@@ -22,17 +22,17 @@ pub fn basis(i: usize, p: usize, x: f32, knots: []const f32) f32 {
         return 0.16666667 * t * t * t;
     } else if (t < 2.0) {
         const t1 = t - 1.0;
-        return 0.16666667 * (-3.0 * t1 * t1 * t1 + 3.0 * t1 * t1 + 3.0 * t1 + 1.0);
+        return 0.16666667 * (1.0 + 3.0 * t1 + 3.0 * t1 * t1 - 3.0 * t1 * t1 * t1);
     } else if (t < 3.0) {
         const t2 = t - 2.0;
-        return 0.16666667 * (3.0 * t2 * t2 * t2 - 6.0 * t2 * t2 + 4.0);
+        return 0.16666667 * (4.0 - 6.0 * t2 * t2 + 3.0 * t2 * t2 * t2);
     } else {
         const t3 = t - 3.0;
-        return 0.16666667 * (1.0 - t3) * (1.0 - t3) * (1.0 - t3);
+        const d = 1.0 - t3;
+        return 0.16666667 * d * d * d;
     }
 }
 
-/// Analytical derivative of the Cubic B-Spline Basis.
 pub fn derivative(i: usize, p: usize, x: f32, knots: []const f32) f32 {
     _ = p;
     const h = knots[1] - knots[0];
@@ -45,13 +45,14 @@ pub fn derivative(i: usize, p: usize, x: f32, knots: []const f32) f32 {
         return inv_h * 0.5 * t * t;
     } else if (t < 2.0) {
         const t1 = t - 1.0;
-        return inv_h * 0.5 * (-3.0 * t1 * t1 + 2.0 * t1 + 1.0);
+        return inv_h * (0.5 + t1 - 1.5 * t1 * t1);
     } else if (t < 3.0) {
         const t2 = t - 2.0;
-        return inv_h * 0.5 * (3.0 * t2 * t2 - 4.0 * t2);
+        return inv_h * (-2.0 * t2 + 1.5 * t2 * t2);
     } else {
         const t3 = t - 3.0;
-        return inv_h * -0.5 * (1.0 - t3) * (1.0 - t3);
+        const d = 1.0 - t3;
+        return inv_h * -0.5 * d * d;
     }
 }
 

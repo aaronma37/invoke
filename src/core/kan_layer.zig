@@ -18,7 +18,12 @@ pub const KanLayer = struct {
         
         var prng = std.Random.DefaultPrng.init(@as(u64, @intCast(std.time.timestamp())));
         const rand = prng.random();
-        for (coeffs) |*c| c.* = (rand.float(f32) * 2.0 - 1.0) * 0.001;
+        
+        // Xavier/Kaiming-like initialization for KAN coefficients
+        const std_dev = @sqrt(2.0 / @as(f32, @floatFromInt(in_dim + out_dim)));
+        for (coeffs) |*c| {
+            c.* = (rand.float(f32) * 2.0 - 1.0) * std_dev;
+        }
 
         const knots = try allocator.alloc(f32, num_knots);
         errdefer allocator.free(knots);
@@ -42,10 +47,11 @@ pub const KanLayer = struct {
                 const x = inputs[b * self.in_dim + i];
                 const sigmoid = 1.0 / (1.0 + std.math.exp(-x));
                 const silu = x * sigmoid;
-                for (batch_out) |*out| out.* += silu;
 
                 const layer_coeffs_base = i * self.num_coeffs * self.out_dim;
                 for (0..self.out_dim) |j| {
+                    batch_out[j] += silu; // SiLU base
+
                     var spline_val: f32 = 0.0;
                     for (0..self.num_coeffs) |k| {
                         const b_val = kan_spline.basis(k, kan_spline.SplineConfig.Order, x, self.knots);
@@ -72,11 +78,11 @@ pub const KanLayer = struct {
                 const silu = x * sigmoid;
                 const silu_prime = sigmoid * (1.0 + x * (1.0 - sigmoid));
 
+                const layer_coeffs_base = i * self.num_coeffs * self.out_dim;
                 for (0..self.out_dim) |j| {
                     batch_out[j] += silu;
                     batch_jac[j * self.in_dim + i] += silu_prime;
 
-                    const layer_coeffs_base = i * self.num_coeffs * self.out_dim;
                     var spline_val: f32 = 0.0;
                     var spline_prime: f32 = 0.0;
                     for (0..self.num_coeffs) |k| {
@@ -106,17 +112,19 @@ pub const KanLayer = struct {
                 const silu_prime = sigmoid * (1.0 + x * (1.0 - sigmoid));
 
                 var total_in_grad: f32 = 0.0;
+                const layer_coeffs_base = i * self.num_coeffs * self.out_dim;
+                
                 for (0..self.out_dim) |j| {
                     const og = b_out_grad[j];
                     total_in_grad += og * silu_prime;
 
-                    const layer_coeffs_base = i * self.num_coeffs * self.out_dim;
                     for (0..self.num_coeffs) |k| {
                         const b_val = kan_spline.basis(k, kan_spline.SplineConfig.Order, x, self.knots);
                         const b_prime = kan_spline.derivative(k, kan_spline.SplineConfig.Order, x, self.knots);
-                        const coeff = self.coeffs[layer_coeffs_base + k * self.out_dim + j];
+                        const coeff_idx = layer_coeffs_base + k * self.out_dim + j;
+                        const coeff = self.coeffs[coeff_idx];
                         
-                        coeff_grads[layer_coeffs_base + k * self.out_dim + j] += og * b_val;
+                        coeff_grads[coeff_idx] += og * b_val;
                         total_in_grad += og * b_prime * coeff;
                     }
                 }

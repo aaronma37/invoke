@@ -29,15 +29,22 @@ pub const DataLoader = struct {
         self.file.close();
     }
 
-    pub fn getBatch(self: DataLoader, batch_size: usize, out_dim: usize, prng: *std.Random.DefaultPrng, inputs: []f32, targets: []f32) void {
+    pub fn getBatch(self: DataLoader, batch_size: usize, in_dim: usize, out_dim: usize, prng: *std.Random.DefaultPrng, inputs: []f32, targets: []f32) void {
         const rand = prng.random();
         for (0..batch_size) |i| {
             const s = self.samples[rand.uintLessThan(usize, self.samples.len)];
-            inputs[i * 3 + 0] = s.x;
-            inputs[i * 3 + 1] = s.y;
-            inputs[i * 3 + 2] = s.z;
             
-            // ONLY fill what the KAN actually has (prevents memory corruption)
+            // Map inputs based on in_dim
+            if (in_dim == 3) {
+                inputs[i * 3 + 0] = s.x;
+                inputs[i * 3 + 1] = s.y;
+                inputs[i * 3 + 2] = s.z;
+            } else if (in_dim == 2) {
+                inputs[i * 2 + 0] = s.x; // maps to u
+                inputs[i * 2 + 1] = s.y; // maps to v
+            }
+            
+            // Map targets based on out_dim
             if (out_dim >= 1) targets[i * out_dim + 0] = s.sdf;
             if (out_dim >= 2) targets[i * out_dim + 1] = s.r;
             if (out_dim >= 3) targets[i * out_dim + 2] = s.g;

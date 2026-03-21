@@ -15,7 +15,7 @@ test "Benchmark: Objaverse Real-World Train" {
     };
 
     const dims = [_]usize{ 3, 32, 32, 6 };
-    var trainer = try KanTrainer.initFixed(allocator, &dims, 8, 10000);
+    var trainer = try KanTrainer.initFixed(allocator, &dims, 8, 10000, .sdf);
     defer trainer.deinit();
 
     const batch_size = 10000;
@@ -24,7 +24,7 @@ test "Benchmark: Objaverse Real-World Train" {
     defer { allocator.free(inputs); allocator.free(targets); }
 
     var prng = std.Random.DefaultPrng.init(42);
-    loader.getBatch(batch_size, &prng, inputs, targets);
+    loader.getBatch(batch_size, 3, 6, &prng, inputs, targets);
 
     const batch = TrainingBatch{ .inputs = inputs, .targets = targets, .batch_size = batch_size };
     _ = try trainer.trainStep(batch);
@@ -39,7 +39,7 @@ test "Benchmark: Production-Sized Stress Test" {
     const num_coeffs = 8;
     
     std.debug.print("\nInitializing Production KAN: 3 -> 32 -> 32 -> 6 (coeffs: {d})\n", .{num_coeffs});
-    var trainer = try KanTrainer.initFixed(allocator, &dims, num_coeffs, 10000);
+    var trainer = try KanTrainer.initFixed(allocator, &dims, num_coeffs, 10000, .sdf);
     defer trainer.deinit();
 
     const batch_size = 100_000;
