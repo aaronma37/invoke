@@ -1,0 +1,94 @@
+#version 450
+layout(local_size_x = 256) in;
+
+struct Vertex {
+    vec4 pos;
+    vec4 normal;
+    vec4 color;
+    vec2 uv;
+    float padding[2];
+};
+
+layout(set = 0, binding = 0) buffer KanWeights { float coeffs[]; } kan;
+layout(set = 0, binding = 1) buffer OutVertices { Vertex verts[]; };
+
+layout(push_constant) uniform PC {
+    uint num_verts;
+    float time;
+    float scale;
+    float padding;
+} pc;
+
+float kan_basis(float t) {
+    if (t < 0.0 || t >= 4.0) return 0.0;
+    if (t < 1.0) return 0.16666667 * t * t * t;
+    if (t < 2.0) { float t1 = t - 1.0; return 0.16666667 * (-3.0 * t1 * t1 * t1 + 3.0 * t1 * t1 + 3.0 * t1 + 1.0); }
+    if (t < 3.0) { float t2 = t - 2.0; return 0.16666667 * (3.0 * t2 * t2 * t2 - 6.0 * t2 * t2 + 4.0); }
+    float t3 = t - 3.0; return 0.16666667 * (1.0 - t3) * (1.0 - t3) * (1.0 - t3);
+}
+
+float evaluate_kan_sdf(vec3 p) {
+    const float h = 0.4;
+    vec3 x = clamp(p, vec3(-1.0), vec3(1.0));
+    float hidden[16];
+    for(int j=0; j<16; j++) {
+        float sum = 0.0;
+        for(int i=0; i<3; i++) {
+            float val = (i == 0) ? x.x : (i == 1 ? x.y : x.z);
+            sum += val / (1.0 + exp(-val));
+            float t_val = (val + 2.2) / h;
+            int k_base = int(floor(t_val));
+            for(int k=k_base-3; k<=k_base; k++) {
+                if(k < 0 || k >= 8) continue;
+                float knots_k = (float(k) - 3.0) * h - 1.0;
+                float b = kan_basis((val - knots_k) / h);
+                sum += b * kan.coeffs[(i * 8 + k) * 16 + j];
+            }
+        }
+        hidden[j] = sum;
+    }
+    float final_sdf = 0.0;
+    for(int i=0; i<16; i++) {
+        float val = hidden[i];
+        final_sdf += val / (1.0 + exp(-val));
+        float t_val = (val + 2.2) / h;
+        int k_base = int(floor(t_val));
+        for(int k=k_base-3; k<=k_base; k++) {
+            if(k < 0 || k >= 8) continue;
+            float knots_k = (float(k) - 3.0) * h - 1.0;
+            float b = kan_basis((val - knots_k) / h);
+            final_sdf += b * kan.coeffs[384 + (i * 8 + k)];
+        }
+    }
+    return final_sdf;
+}
+
+vec3 get_normal(vec3 p) {
+    vec2 e = vec2(0.001, 0.0);
+    return normalize(vec3(
+        evaluate_kan_sdf(p + e.xyy) - evaluate_kan_sdf(p - e.xyy),
+        evaluate_kan_sdf(p + e.yxy) - evaluate_kan_sdf(p - e.yxy),
+        evaluate_kan_sdf(p + e.yyx) - evaluate_kan_sdf(p - e.yyx)
+    ));
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.num_verts) return;
+
+    // Each vertex starts on a unit sphere based on its initial position in the buffer
+    // (We'll upload a unit sphere to the buffer first, or generate it here)
+    vec3 p = verts[idx].pos.xyz;
+    vec3 origin_p = p;
+    
+    // Iteratively project onto SDF surface
+    for(int i=0; i<8; i++) {
+        float d = evaluate_kan_sdf(p);
+        vec3 n = get_normal(p);
+        p -= n * d * 0.5; // Newton step
+    }
+
+    verts[idx].pos = vec4(p * pc.scale, 1.0);
+    verts[idx].normal = vec4(get_normal(p), 0.0);
+    verts[idx].color = vec4(0.5 + 0.5 * verts[idx].normal.xyz, 1.0);
+}

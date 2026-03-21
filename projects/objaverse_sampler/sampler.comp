@@ -1,0 +1,74 @@
+#version 450
+layout(local_size_x = 256) in;
+
+struct Triangle {
+    vec4 v0;
+    vec4 v1;
+    vec4 v2;
+    vec4 color; // RGB + Padding/Material
+};
+
+struct PointSample {
+    float x, y, z;
+    float sdf;
+    float r, g, b;
+    float roughness;
+    float metallic;
+};
+
+layout(set = 0, binding = 0) buffer Triangles { Triangle tris[]; };
+layout(set = 0, binding = 1) buffer Samples { PointSample samples[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint tri_count;
+    uint sample_count;
+} pc;
+
+float dot2(vec3 v) { return dot(v,v); }
+
+// Unsigned distance to triangle
+float udTriangle(vec3 p, vec3 a, vec3 b, vec3 c) {
+    vec3 ba = b - a; vec3 pa = p - a;
+    vec3 cb = c - b; vec3 pb = p - b;
+    vec3 ac = a - c; vec3 pc = p - c;
+    vec3 nor = cross(ba, ac);
+
+    return (
+        (sign(dot(cross(ba, nor), pa)) +
+         sign(dot(cross(cb, nor), pb)) +
+         sign(dot(cross(ac, nor), pc)) < 2.0)
+        ?
+        min(min(
+            dot2(ba*clamp(dot(ba,pa)/dot2(ba),0.0,1.0)-pa),
+            dot2(cb*clamp(dot(cb,pb)/dot2(cb),0.0,1.0)-pb)),
+            dot2(ac*clamp(dot(ac,pc)/dot2(ac),0.0,1.0)-pc)
+        )
+        :
+        dot(nor,pa)*dot(nor,pa)/dot2(nor)
+    );
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.sample_count) return;
+
+    vec3 p = vec3(samples[idx].x, samples[idx].y, samples[idx].z);
+    float min_dist_sq = 1e20;
+    vec3 closest_color = vec3(0.5);
+
+    // Initial O(N) pass
+    for (uint i = 0; i < pc.tri_count; i++) {
+        float d2 = udTriangle(p, tris[i].v0.xyz, tris[i].v1.xyz, tris[i].v2.xyz);
+        if (d2 < min_dist_sq) {
+            min_dist_sq = d2;
+            closest_color = tris[i].color.xyz;
+        }
+    }
+
+    samples[idx].sdf = sqrt(min_dist_sq);
+    samples[idx].r = closest_color.x;
+    samples[idx].g = closest_color.y;
+    samples[idx].b = closest_color.z;
+    samples[idx].roughness = 0.5;
+    samples[idx].metallic = 0.0;
+}
