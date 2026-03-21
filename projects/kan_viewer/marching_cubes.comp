@@ -1,0 +1,85 @@
+#version 450
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+struct Vertex {
+    vec4 pos;
+    vec4 normal;
+    vec4 color;
+    vec2 uv;
+    float padding[2];
+};
+
+layout(set = 0, binding = 0) buffer Field { float density[]; } field;
+layout(set = 0, binding = 1) buffer OutVertices { Vertex verts[]; };
+layout(set = 0, binding = 2) buffer Counter { uint count; } counter;
+
+layout(push_constant) uniform PC {
+    uint grid_size;
+    float iso_level;
+} pc;
+
+vec3 get_pos(uint x, uint y, uint z) {
+    return (vec3(x, y, z) / float(pc.grid_size - 1)) * 2.0 - 1.0;
+}
+
+float get_density(uint x, uint y, uint z) {
+    return field.density[x + y * pc.grid_size + z * pc.grid_size * pc.grid_size];
+}
+
+void main() {
+    uvec3 id = gl_GlobalInvocationID.xyz;
+    if (id.x >= pc.grid_size - 1 || id.y >= pc.grid_size - 1 || id.z >= pc.grid_size - 1) return;
+
+    float d000 = get_density(id.x,   id.y,   id.z) - pc.iso_level;
+    float d100 = get_density(id.x+1, id.y,   id.z) - pc.iso_level;
+    float d010 = get_density(id.x,   id.y+1, id.z) - pc.iso_level;
+    float d001 = get_density(id.x,   id.y,   id.z+1) - pc.iso_level;
+
+    float size = 2.0 / float(pc.grid_size - 1);
+
+    // If edge crosses our iso-level, generate triangles
+    if (d000 * d100 < 0.0) {
+        uint vidx = atomicAdd(counter.count, 6);
+        if (vidx + 6 >= 1024*1024) return;
+        vec3 p = mix(get_pos(id.x, id.y, id.z), get_pos(id.x+1, id.y, id.z), abs(d000)/(abs(d000)+abs(d100)));
+        vec3 n = normalize(vec3(d000 - d100, 0.05, 0.05));
+        
+        verts[vidx+0].pos = vec4(p, 1.0);
+        verts[vidx+1].pos = vec4(p + vec3(0, size, 0), 1.0);
+        verts[vidx+2].pos = vec4(p + vec3(0, 0, size), 1.0);
+        verts[vidx+3].pos = vec4(p + vec3(0, size, size), 1.0);
+        verts[vidx+4].pos = vec4(p + vec3(0, 0, size), 1.0);
+        verts[vidx+5].pos = vec4(p + vec3(0, size, 0), 1.0);
+        for(int i=0; i<6; i++) { verts[vidx+i].normal = vec4(n, 0.0); verts[vidx+i].color = vec4(0.6, 0.8, 1.0, 1.0); }
+    }
+
+    if (d000 * d010 < 0.0) {
+        uint vidx = atomicAdd(counter.count, 6);
+        if (vidx + 6 >= 1024*1024) return;
+        vec3 p = mix(get_pos(id.x, id.y, id.z), get_pos(id.x, id.y+1, id.z), abs(d000)/(abs(d000)+abs(d010)));
+        vec3 n = normalize(vec3(0.05, d000 - d010, 0.05));
+        
+        verts[vidx+0].pos = vec4(p, 1.0);
+        verts[vidx+1].pos = vec4(p + vec3(size, 0, 0), 1.0);
+        verts[vidx+2].pos = vec4(p + vec3(0, 0, size), 1.0);
+        verts[vidx+3].pos = vec4(p + vec3(size, 0, size), 1.0);
+        verts[vidx+4].pos = vec4(p + vec3(0, 0, size), 1.0);
+        verts[vidx+5].pos = vec4(p + vec3(size, 0, 0), 1.0);
+        for(int i=0; i<6; i++) { verts[vidx+i].normal = vec4(n, 0.0); verts[vidx+i].color = vec4(0.6, 0.8, 1.0, 1.0); }
+    }
+
+    if (d000 * d001 < 0.0) {
+        uint vidx = atomicAdd(counter.count, 6);
+        if (vidx + 6 >= 1024*1024) return;
+        vec3 p = mix(get_pos(id.x, id.y, id.z), get_pos(id.x, id.y, id.z+1), abs(d000)/(abs(d000)+abs(d001)));
+        vec3 n = normalize(vec3(0.05, 0.05, d000 - d001));
+        
+        verts[vidx+0].pos = vec4(p, 1.0);
+        verts[vidx+1].pos = vec4(p + vec3(size, 0, 0), 1.0);
+        verts[vidx+2].pos = vec4(p + vec3(0, size, 0), 1.0);
+        verts[vidx+3].pos = vec4(p + vec3(size, size, 0), 1.0);
+        verts[vidx+4].pos = vec4(p + vec3(0, size, 0), 1.0);
+        verts[vidx+5].pos = vec4(p + vec3(size, 0, 0), 1.0);
+        for(int i=0; i<6; i++) { verts[vidx+i].normal = vec4(n, 0.0); verts[vidx+i].color = vec4(0.6, 0.8, 1.0, 1.0); }
+    }
+}

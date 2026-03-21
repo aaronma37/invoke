@@ -20,6 +20,12 @@ pub fn build(b: *std.Build) void {
     });
     moontide_mod.addImport("core", core_mod);
 
+    const kan_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/kan_network.zig"),
+    });
+    kan_mod.addIncludePath(b.path("src/core"));
+    kan_mod.addIncludePath(b.path("sdk"));
+
     // 1. THE KERNEL (Pure Silicon Pulse Oscillator)
     const exe = b.addExecutable(.{
         .name = "moontide",
@@ -141,7 +147,58 @@ pub fn build(b: *std.Build) void {
     });
     b.getInstallStep().dependOn(&webgpu_install.step);
 
-    // 6. RUN COMMAND
+    // 6. KAN TRAINER TOOL
+    const train_exe = b.addExecutable(.{
+        .name = "kan-train",
+        .root_source_file = b.path("src/tools/train.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
+        .optimize = optimize,
+    });
+    train_exe.linkLibC();
+    train_exe.addIncludePath(b.path("src/core"));
+    train_exe.addIncludePath(b.path("sdk"));
+    train_exe.root_module.addImport("kan", kan_mod);
+    b.installArtifact(train_exe);
+
+    const train_run = b.addRunArtifact(train_exe);
+    train_run.step.dependOn(b.getInstallStep());
+    if (b.args) |args| train_run.addArgs(args);
+    const train_step = b.step("train", "Run the KAN trainer");
+    train_step.dependOn(&train_run.step);
+
+    // KAN BENCHMARK TOOL
+    const bench_exe = b.addExecutable(.{
+        .name = "benchmark-kan",
+        .root_source_file = b.path("src/tools/benchmark_kan.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
+        .optimize = optimize,
+    });
+    bench_exe.linkLibC();
+    bench_exe.addIncludePath(b.path("src/core"));
+    bench_exe.addIncludePath(b.path("sdk"));
+    bench_exe.root_module.addImport("kan", kan_mod);
+    b.installArtifact(bench_exe);
+
+    const bench_run = b.addRunArtifact(bench_exe);
+    const bench_step = b.step("bench", "Run the KAN benchmark");
+    bench_step.dependOn(&bench_run.step);
+
+    // KAN TO PCB TOOL (Validation)
+    const pcb_exe = b.addExecutable(.{
+        .name = "kan-to-pcb",
+        .root_source_file = b.path("src/tools/kan_to_pcb.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
+        .optimize = optimize,
+    });
+    pcb_exe.linkLibC();
+    pcb_exe.root_module.addImport("kan", kan_mod);
+    b.installArtifact(pcb_exe);
+
+    const pcb_run = b.addRunArtifact(pcb_exe);
+    const pcb_step = b.step("debug-kan", "Sample model.kan to kan_debug.pcb");
+    pcb_step.dependOn(&pcb_run.step);
+
+    // 7. RUN COMMAND
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
