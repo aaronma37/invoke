@@ -11,6 +11,13 @@ const Vec3 = struct {
     pub fn normalize(a: Vec3) Vec3 { return a.mul(1.0 / a.length()); }
 };
 
+const Vec2 = struct { u: f32, v: f32 };
+
+const Face = struct {
+    v_idx: [3]usize,
+    vt_idx: [3]usize,
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -40,7 +47,9 @@ pub fn main() !void {
 
     var vertices = std.ArrayList(Vec3).init(allocator);
     defer vertices.deinit();
-    var faces = std.ArrayList([3]usize).init(allocator);
+    var uvs = std.ArrayList(Vec2).init(allocator);
+    defer uvs.deinit();
+    var faces = std.ArrayList(Face).init(allocator);
     defer faces.deinit();
 
     var buf: [1024]u8 = undefined;
@@ -52,20 +61,35 @@ pub fn main() !void {
             const y = try std.fmt.parseFloat(f32, it.next().?);
             const z = try std.fmt.parseFloat(f32, it.next().?);
             try vertices.append(.{ .x = x, .y = y, .z = z });
+        } else if (std.mem.eql(u8, first, "vt")) {
+            const u = try std.fmt.parseFloat(f32, it.next().?);
+            const v = try std.fmt.parseFloat(f32, it.next().?);
+            try uvs.append(.{ .u = u, .v = v });
         } else if (std.mem.eql(u8, first, "f")) {
-            var f: [3]usize = undefined;
+            var f: Face = undefined;
             for (0..3) |i| {
                 const part = it.next().?;
                 var sit = std.mem.tokenizeAny(u8, part, "/");
-                f[i] = (try std.fmt.parseInt(usize, sit.next().?, 10)) - 1;
+                f.v_idx[i] = (try std.fmt.parseInt(usize, sit.next().?, 10)) - 1;
+                if (sit.next()) |uv_str| {
+                    f.vt_idx[i] = (try std.fmt.parseInt(usize, uv_str, 10)) - 1;
+                } else {
+                    f.vt_idx[i] = 0; // Fallback
+                }
             }
             try faces.append(f);
         }
     }
+    
+    std.debug.print("Loaded base mesh: {d} verts, {d} uvs, {d} faces.\n", .{vertices.items.len, uvs.items.len, faces.items.len});
 
-    // 3. Displace Vertices
+    // 3. Displace Vertices based on UVs
+    // Since vertices might be split by UVs in the OBJ, we'll displace based on the face-vertex combinations.
+    // To keep the output mesh unified, we will create a new displaced vertex array matching the size of the original vertices.
+    // Note: If a vertex has multiple UVs (seams), this simple approach will use the last UV evaluated.
     var displaced = try allocator.alloc(Vec3, vertices.items.len);
     defer allocator.free(displaced);
+    @memcpy(displaced, vertices.items); // Copy base geometry first
 
     const batch_size = 1000;
     var activations = try allocator.alloc([]f32, net.layers.len + 1);
@@ -73,35 +97,37 @@ pub fn main() !void {
     activations[net.layers.len] = try allocator.alloc(f32, batch_size * net.out_dim);
     defer { for (activations) |a| allocator.free(a); allocator.free(activations); }
 
-    var v_idx: usize = 0;
-    while (v_idx < vertices.items.len) {
-        const current_batch = if (vertices.items.len - v_idx < batch_size) vertices.items.len - v_idx else batch_size;
+    var f_idx: usize = 0;
+    while (f_idx < faces.items.len) {
+        const current_batch_faces = if (faces.items.len - f_idx < batch_size / 3) faces.items.len - f_idx else batch_size / 3;
+        const current_points = current_batch_faces * 3;
         
-        for (0..current_batch) |i| {
-            const v = vertices.items[v_idx + i];
-            const normal = v.normalize();
-            
-            // Spherical Mapping to UV
-            const phi = std.math.acos(std.math.clamp(normal.z, -1.0, 1.0));
-            const theta = std.math.atan2(normal.y, normal.x);
-            
-            const u = (theta + std.math.pi) / (2.0 * std.math.pi);
-            const vv = phi / std.math.pi;
-
-            activations[0][i * 2 + 0] = u;
-            activations[0][i * 2 + 1] = vv;
+        for (0..current_batch_faces) |i| {
+            const face = faces.items[f_idx + i];
+            for (0..3) |j| {
+                const uv = if (uvs.items.len > face.vt_idx[j]) uvs.items[face.vt_idx[j]] else .{ .u = 0, .v = 0 };
+                activations[0][(i * 3 + j) * 2 + 0] = uv.u;
+                activations[0][(i * 3 + j) * 2 + 1] = uv.v;
+            }
         }
 
-        net.forward(activations[0], activations, current_batch);
+        net.forward(activations[0], activations, current_points);
 
-        for (0..current_batch) |i| {
-            const v = vertices.items[v_idx + i];
-            const normal = v.normalize();
-            const d = activations[net.layers.len][i * net.out_dim];
-            displaced[v_idx + i] = v.add(normal.mul(d));
+        for (0..current_batch_faces) |i| {
+            const face = faces.items[f_idx + i];
+            for (0..3) |j| {
+                const v_id = face.v_idx[j];
+                const base_v = vertices.items[v_id];
+                const normal = base_v.normalize(); // Simple spherical normal for now
+                const d = activations[net.layers.len][(i * 3 + j) * net.out_dim];
+                
+                // Note: If a vertex is shared across faces, it will be overwritten. 
+                // For a fully unwrapped mesh, vertices are usually unique per UV anyway.
+                displaced[v_id] = base_v.add(normal.mul(d));
+            }
         }
 
-        v_idx += current_batch;
+        f_idx += current_batch_faces;
     }
 
     // 4. Save Displaced OBJ
@@ -112,8 +138,15 @@ pub fn main() !void {
     for (displaced) |v| {
         try writer.print("v {d:0.6} {d:0.6} {d:0.6}\n", .{v.x, v.y, v.z});
     }
+    for (uvs.items) |uv| {
+        try writer.print("vt {d:0.6} {d:0.6}\n", .{uv.u, uv.v});
+    }
     for (faces.items) |f| {
-        try writer.print("f {d} {d} {d}\n", .{f[0] + 1, f[1] + 1, f[2] + 1});
+        try writer.print("f {d}/{d} {d}/{d} {d}/{d}\n", .{
+            f.v_idx[0] + 1, f.vt_idx[0] + 1,
+            f.v_idx[1] + 1, f.vt_idx[1] + 1,
+            f.v_idx[2] + 1, f.vt_idx[2] + 1,
+        });
     }
 
     std.debug.print("Successfully saved displaced mesh to {s}\n", .{out_path});

@@ -62,8 +62,6 @@ pub const TaskType = enum {
 };
 
 pub const KanTrainer = struct {
-    const num_threads = 16; 
-
     pub const ThreadState = struct {
         activations: [][]f32,
         jacobians: [][]f32,
@@ -93,7 +91,7 @@ pub const KanTrainer = struct {
                 c_grads[i] = try allocator.alloc(f32, size);
             }
             const o_grad = try allocator.alloc(f32, max_chunk_size * net.out_dim);
-            const b_scratch = try allocator.alloc(f32, max_chunk_size); // Plenty for 256 size bucket sort
+            const b_scratch = try allocator.alloc(f32, max_chunk_size); 
 
             return ThreadState{ 
                 .activations = acts, 
@@ -125,21 +123,26 @@ pub const KanTrainer = struct {
     allocator: mem.Allocator,
     thread_states: []ThreadState,
     pool: *std.Thread.Pool,
+    num_threads: usize,
     task_type: TaskType = .sdf,
     lambda_shape: f32 = 1.0,
     lambda_l2: f32 = 0.0001,
 
     pub fn initFixed(allocator: mem.Allocator, layer_dims: []const usize, num_coeffs: usize, max_chunk_size: usize, task: TaskType) !*KanTrainer {
+        return initWithThreads(allocator, layer_dims, num_coeffs, max_chunk_size, task, 16);
+    }
+
+    pub fn initWithThreads(allocator: mem.Allocator, layer_dims: []const usize, num_coeffs: usize, max_chunk_size: usize, task: TaskType, n_threads: usize) !*KanTrainer {
         const self = try allocator.create(KanTrainer);
         errdefer allocator.destroy(self);
 
         const net = try KanNetwork.init(allocator, layer_dims, num_coeffs);
-        const states = try allocator.alloc(ThreadState, num_threads);
-        for (0..num_threads) |i| states[i] = try ThreadState.init(allocator, net, max_chunk_size);
+        const states = try allocator.alloc(ThreadState, n_threads);
+        for (0..n_threads) |i| states[i] = try ThreadState.init(allocator, net, max_chunk_size);
         
         const pool = try allocator.create(std.Thread.Pool);
         errdefer allocator.destroy(pool);
-        try pool.init(.{ .allocator = allocator, .n_jobs = num_threads });
+        try pool.init(.{ .allocator = allocator, .n_jobs = n_threads });
 
         self.* = KanTrainer{
             .net = net,
@@ -147,6 +150,7 @@ pub const KanTrainer = struct {
             .allocator = allocator,
             .thread_states = states,
             .pool = pool,
+            .num_threads = n_threads,
             .task_type = task,
         };
 
@@ -154,15 +158,16 @@ pub const KanTrainer = struct {
     }
 
     pub fn initWithNet(allocator: mem.Allocator, net: KanNetwork, max_chunk_size: usize, task: TaskType) !*KanTrainer {
+        const n_threads = 16;
         const self = try allocator.create(KanTrainer);
         errdefer allocator.destroy(self);
 
-        const states = try allocator.alloc(ThreadState, num_threads);
-        for (0..num_threads) |i| states[i] = try ThreadState.init(allocator, net, max_chunk_size);
+        const states = try allocator.alloc(ThreadState, n_threads);
+        for (0..n_threads) |i| states[i] = try ThreadState.init(allocator, net, max_chunk_size);
         
         const pool = try allocator.create(std.Thread.Pool);
         errdefer allocator.destroy(pool);
-        try pool.init(.{ .allocator = allocator, .n_jobs = num_threads });
+        try pool.init(.{ .allocator = allocator, .n_jobs = n_threads });
 
         self.* = KanTrainer{
             .net = net,
@@ -170,6 +175,7 @@ pub const KanTrainer = struct {
             .allocator = allocator,
             .thread_states = states,
             .pool = pool,
+            .num_threads = n_threads,
             .task_type = task,
         };
 
@@ -213,7 +219,6 @@ pub const KanTrainer = struct {
 
         for (state.coeff_grads) |g| @memset(g, 0.0);
         
-        // Zero-copy SoA slicing
         const in_dim = net.layers[0].in_dim;
         const total_batch = task.batch.batch_size;
         for (0..in_dim) |i| {
@@ -244,7 +249,8 @@ pub const KanTrainer = struct {
 
         const const_activations = @as([][]const f32, @ptrCast(local_activations[0..net.layers.len+1]));
         net.backward(const_activations, out_grad_soa, state.coeff_grads, local_scratch[0..net.layers.len], batch_size, state.bucket_scratch);
-        }
+    }
+
     fn poolRunWrapper(wait_group: *std.Thread.WaitGroup, task: TrainTask) void {
         defer wait_group.finish();
         trainTaskFunc(task);
@@ -257,13 +263,15 @@ pub const KanTrainer = struct {
 
     pub fn trainStep(self: *KanTrainer, batch: TrainingBatch) !f32 {
         const batch_size = batch.batch_size;
-        const chunk_size = (batch_size + num_threads - 1) / num_threads;
-        var thread_losses: [num_threads]ThreadLoss = undefined;
-        for (&thread_losses) |*tl| { tl.val = 0.0; }
+        const chunk_size = (batch_size + self.num_threads - 1) / self.num_threads;
+        
+        // We need a way to dynamically size this or use a safe upper bound
+        var thread_losses: [64]ThreadLoss = undefined; 
+        for (0..self.num_threads) |t| { thread_losses[t].val = 0.0; }
         
         var wg = std.Thread.WaitGroup{};
 
-        for (0..num_threads) |t| {
+        for (0..self.num_threads) |t| {
             const start = t * chunk_size;
             if (start >= batch_size) break;
             const end = @min(start + chunk_size, batch_size);
@@ -282,24 +290,25 @@ pub const KanTrainer = struct {
         wg.wait();
 
         var total_loss: f32 = 0.0;
-        for (0..num_threads) |t| {
+        for (0..self.num_threads) |t| {
             if (t * chunk_size < batch_size) {
                 total_loss += thread_losses[t].val;
             }
         }
 
-        const ccd_threads = 8;
+        const ccd_threads = if (self.num_threads >= 8) 8 else self.num_threads;
         for (0..self.net.layers.len) |l| {
             const size = self.net.layers[l].in_dim * self.net.layers[l].num_coeffs * self.net.layers[l].out_dim_padded;
             const target_coeffs = self.net.layers[l].coeffs;
+            const vec_len = 16;
+            const V = @Vector(vec_len, f32);
             
+            // CCD0 Reduction
             for (1..ccd_threads) |t| {
                 if (t * chunk_size >= batch_size) break;
                 const src = self.thread_states[t].coeff_grads[l];
                 const acc = self.thread_states[0].coeff_grads[l];
                 var i: usize = 0;
-                const vec_len = 16;
-                const V = @Vector(vec_len, f32);
                 while (i + vec_len <= size) : (i += vec_len) {
                     const v_src: V = src[i..i+vec_len][0..vec_len].*;
                     var v_acc: V = acc[i..i+vec_len][0..vec_len].*;
@@ -309,41 +318,40 @@ pub const KanTrainer = struct {
                 while (i < size) : (i += 1) { acc[i] += src[i]; }
             }
 
-            for (ccd_threads + 1 .. num_threads) |t| {
-                if (t * chunk_size >= batch_size) break;
-                const src = self.thread_states[t].coeff_grads[l];
-                const acc = self.thread_states[ccd_threads].coeff_grads[l];
-                var i: usize = 0;
-                const vec_len = 16;
-                const V = @Vector(vec_len, f32);
-                while (i + vec_len <= size) : (i += vec_len) {
-                    const v_src: V = src[i..i+vec_len][0..vec_len].*;
-                    var v_acc: V = acc[i..i+vec_len][0..vec_len].*;
-                    v_acc += v_src;
-                    acc[i..i+vec_len][0..vec_len].* = v_acc;
+            // CCD1 Reduction
+            if (self.num_threads > ccd_threads) {
+                for (ccd_threads + 1 .. self.num_threads) |t| {
+                    if (t * chunk_size >= batch_size) break;
+                    const src = self.thread_states[t].coeff_grads[l];
+                    const acc = self.thread_states[ccd_threads].coeff_grads[l];
+                    var i: usize = 0;
+                    while (i + vec_len <= size) : (i += vec_len) {
+                        const v_src: V = src[i..i+vec_len][0..vec_len].*;
+                        var v_acc: V = acc[i..i+vec_len][0..vec_len].*;
+                        v_acc += v_src;
+                        acc[i..i+vec_len][0..vec_len].* = v_acc;
+                    }
+                    while (i < size) : (i += 1) { acc[i] += src[i]; }
                 }
-                while (i < size) : (i += 1) { acc[i] += src[i]; }
+
+                // Final merge
+                const ccd0_acc = self.thread_states[0].coeff_grads[l];
+                const ccd1_acc = self.thread_states[ccd_threads].coeff_grads[l];
+                if (ccd_threads * chunk_size < batch_size) {
+                    var i: usize = 0;
+                    while (i + vec_len <= size) : (i += vec_len) {
+                        const v_ccd1: V = ccd1_acc[i..i+vec_len][0..vec_len].*;
+                        var v_ccd0: V = ccd0_acc[i..i+vec_len][0..vec_len].*;
+                        v_ccd0 += v_ccd1;
+                        ccd0_acc[i..i+vec_len][0..vec_len].* = v_ccd0;
+                    }
+                    while (i < size) : (i += 1) { ccd0_acc[i] += ccd1_acc[i]; }
+                }
             }
 
             const ccd0_acc = self.thread_states[0].coeff_grads[l];
-            const ccd1_acc = self.thread_states[ccd_threads].coeff_grads[l];
-            if (ccd_threads * chunk_size < batch_size) {
-                var i: usize = 0;
-                const vec_len = 16;
-                const V = @Vector(vec_len, f32);
-                while (i + vec_len <= size) : (i += vec_len) {
-                    const v_ccd1: V = ccd1_acc[i..i+vec_len][0..vec_len].*;
-                    var v_ccd0: V = ccd0_acc[i..i+vec_len][0..vec_len].*;
-                    v_ccd0 += v_ccd1;
-                    ccd0_acc[i..i+vec_len][0..vec_len].* = v_ccd0;
-                }
-                while (i < size) : (i += 1) { ccd0_acc[i] += ccd1_acc[i]; }
-            }
-
             const inv_batch = 1.0 / @as(f32, @floatFromInt(batch_size));
             var i: usize = 0;
-            const vec_len = 16;
-            const V = @Vector(vec_len, f32);
             const v_inv = @as(V, @splat(inv_batch));
             const v_l2 = @as(V, @splat(self.lambda_l2));
 
