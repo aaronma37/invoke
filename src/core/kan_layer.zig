@@ -190,7 +190,7 @@ pub const KanLayer = struct {
         }
     }
 
-    pub fn backward(self: KanLayer, inputs: []const f32, out_grad: []const f32, in_grad: []f32, coeff_grads: []f32, batch_size: usize) void {
+    pub fn backward(self: KanLayer, inputs: []const f32, out_grad: []const f32, in_grad: []f32, coeff_grads: []f32, batch_size: usize, scratch: []f32) void {
         @memset(in_grad[0 .. batch_size * self.in_dim], 0.0);
 
         const h = self.knots[1] - self.knots[0];
@@ -201,60 +201,168 @@ pub const KanLayer = struct {
         const vec_len = 16;
         const V = @Vector(vec_len, f32);
 
-        for (0..batch_size) |b| {
-            const b_out_grad = out_grad[b * self.out_dim .. (b + 1) * self.out_dim];
-            const b_in_grad = in_grad[b * self.in_dim .. (b + 1) * self.in_dim];
+        const BLOCK_SIZE = 256;
+        var b_start: usize = 0;
+
+        // Use scratch memory for block-local structures
+        const sorted_idx = @as([*]u16, @ptrCast(scratch.ptr)); // size 256
+        const k_bases = @as([*]u8, @ptrCast(scratch.ptr + 256)); // size 256
+        
+        while (b_start < batch_size) : (b_start += BLOCK_SIZE) {
+            const b_end = @min(b_start + BLOCK_SIZE, batch_size);
+            const cur_block_size = b_end - b_start;
 
             for (0..self.in_dim) |i| {
-                const x_raw = inputs[b * self.in_dim + i];
-                const sigmoid = 1.0 / (1.0 + kan_spline.fast_exp(-x_raw));
-                const silu_prime = sigmoid * (1.0 + x_raw * (1.0 - sigmoid));
-
-                const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
-                const span_float = (x - self.knots[0]) * inv_h;
-                const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
-                const u = span_float - @as(f32, @floatFromInt(span_idx));
-
-                const b_vals = kan_spline.basisAll(u);
-                const bp_vals = kan_spline.derivativeAll(u, inv_h);
-                const k_base = @as(usize, @intCast(@max(0, span_idx - 3)));
                 const layer_coeffs_base = i * self.num_coeffs * self.out_dim_padded;
 
-                var total_in_grad: f32 = 0.0;
+                var b_vals_block: [BLOCK_SIZE][4]f32 = undefined;
+                var bp_vals_block: [BLOCK_SIZE][4]f32 = undefined;
+                var silup_block: [BLOCK_SIZE]f32 = undefined;
+
+                var counts = [_]u16{0} ** 128;
+
+                for (0..cur_block_size) |idx| {
+                    const b = b_start + idx;
+                    const x_raw = inputs[b * self.in_dim + i];
+                    const sigmoid = 1.0 / (1.0 + kan_spline.fast_exp(-x_raw));
+                    silup_block[idx] = sigmoid * (1.0 + x_raw * (1.0 - sigmoid));
+
+                    const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
+                    const span_float = (x - self.knots[0]) * inv_h;
+                    const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
+                    const u = span_float - @as(f32, @floatFromInt(span_idx));
+
+                    b_vals_block[idx] = kan_spline.basisAll(u);
+                    bp_vals_block[idx] = kan_spline.derivativeAll(u, inv_h);
+                    
+                    const k_base = @as(u8, @intCast(@max(0, span_idx - 3)));
+                    k_bases[idx] = k_base;
+                    counts[k_base] += 1;
+                }
+
+                var offsets = [_]u16{0} ** 128;
+                var current_offset: u16 = 0;
+                for (0..self.num_coeffs) |k| {
+                    offsets[k] = current_offset;
+                    current_offset += counts[k];
+                }
+
+                var current_ptrs = offsets;
+                for (0..cur_block_size) |idx| {
+                    const k_base = k_bases[idx];
+                    sorted_idx[current_ptrs[k_base]] = @as(u16, @intCast(idx));
+                    current_ptrs[k_base] += 1;
+                }
+
                 var j: usize = 0;
                 while (j + vec_len <= self.out_dim) : (j += vec_len) {
-                    const og_v: V = b_out_grad[j .. j + vec_len][0..vec_len].*;
-                    var total_in_grad_v = og_v * @as(V, @splat(silu_prime));
+                    
+                    for (0..self.num_coeffs) |k| {
+                        const count = counts[k];
+                        if (count == 0) continue;
+                        const start_ptr = offsets[k];
 
-                    for (0..4) |a| {
-                        const k_u = k_base + a;
-                        if (k_u < self.num_coeffs) {
-                            const c_base = layer_coeffs_base + k_u * self.out_dim_padded + j;
-                            const weight_v: V = self.coeffs[c_base .. c_base + vec_len][0..vec_len].*;
-                            var cg_v: V = coeff_grads[c_base .. c_base + vec_len][0..vec_len].*;
+                        var acc_cg_0 = @as(V, @splat(0.0));
+                        var acc_cg_1 = @as(V, @splat(0.0));
+                        var acc_cg_2 = @as(V, @splat(0.0));
+                        var acc_cg_3 = @as(V, @splat(0.0));
+
+                        const c_idx_0 = layer_coeffs_base + (k + 0) * self.out_dim_padded + j;
+                        const w_0: V = if (k + 0 < self.num_coeffs) self.coeffs[c_idx_0 .. c_idx_0 + vec_len][0..vec_len].* else @as(V, @splat(0.0));
+                        const c_idx_1 = layer_coeffs_base + (k + 1) * self.out_dim_padded + j;
+                        const w_1: V = if (k + 1 < self.num_coeffs) self.coeffs[c_idx_1 .. c_idx_1 + vec_len][0..vec_len].* else @as(V, @splat(0.0));
+                        const c_idx_2 = layer_coeffs_base + (k + 2) * self.out_dim_padded + j;
+                        const w_2: V = if (k + 2 < self.num_coeffs) self.coeffs[c_idx_2 .. c_idx_2 + vec_len][0..vec_len].* else @as(V, @splat(0.0));
+                        const c_idx_3 = layer_coeffs_base + (k + 3) * self.out_dim_padded + j;
+                        const w_3: V = if (k + 3 < self.num_coeffs) self.coeffs[c_idx_3 .. c_idx_3 + vec_len][0..vec_len].* else @as(V, @splat(0.0));
+
+                        for (0..count) |c| {
+                            const idx = sorted_idx[start_ptr + c];
+                            const b = b_start + idx;
+                            const og_v: V = out_grad[b * self.out_dim + j ..][0..vec_len].*;
                             
-                            cg_v += og_v * @as(V, @splat(b_vals[a]));
-                            total_in_grad_v += og_v * @as(V, @splat(bp_vals[a])) * weight_v;
-                            
-                            coeff_grads[c_base .. c_base + vec_len][0..vec_len].* = cg_v;
+                            acc_cg_0 += og_v * @as(V, @splat(b_vals_block[idx][0]));
+                            acc_cg_1 += og_v * @as(V, @splat(b_vals_block[idx][1]));
+                            acc_cg_2 += og_v * @as(V, @splat(b_vals_block[idx][2]));
+                            acc_cg_3 += og_v * @as(V, @splat(b_vals_block[idx][3]));
+
+                            var in_g_v = og_v * @as(V, @splat(silup_block[idx]));
+                            in_g_v += og_v * @as(V, @splat(bp_vals_block[idx][0])) * w_0;
+                            in_g_v += og_v * @as(V, @splat(bp_vals_block[idx][1])) * w_1;
+                            in_g_v += og_v * @as(V, @splat(bp_vals_block[idx][2])) * w_2;
+                            in_g_v += og_v * @as(V, @splat(bp_vals_block[idx][3])) * w_3;
+
+                            in_grad[b * self.in_dim + i] += @reduce(.Add, in_g_v);
+                        }
+
+                        if (k + 0 < self.num_coeffs) {
+                            var cg: V = coeff_grads[c_idx_0 .. c_idx_0 + vec_len][0..vec_len].*;
+                            cg += acc_cg_0;
+                            coeff_grads[c_idx_0 .. c_idx_0 + vec_len][0..vec_len].* = cg;
+                        }
+                        if (k + 1 < self.num_coeffs) {
+                            var cg: V = coeff_grads[c_idx_1 .. c_idx_1 + vec_len][0..vec_len].*;
+                            cg += acc_cg_1;
+                            coeff_grads[c_idx_1 .. c_idx_1 + vec_len][0..vec_len].* = cg;
+                        }
+                        if (k + 2 < self.num_coeffs) {
+                            var cg: V = coeff_grads[c_idx_2 .. c_idx_2 + vec_len][0..vec_len].*;
+                            cg += acc_cg_2;
+                            coeff_grads[c_idx_2 .. c_idx_2 + vec_len][0..vec_len].* = cg;
+                        }
+                        if (k + 3 < self.num_coeffs) {
+                            var cg: V = coeff_grads[c_idx_3 .. c_idx_3 + vec_len][0..vec_len].*;
+                            cg += acc_cg_3;
+                            coeff_grads[c_idx_3 .. c_idx_3 + vec_len][0..vec_len].* = cg;
                         }
                     }
-                    total_in_grad += @reduce(.Add, total_in_grad_v);
                 }
 
                 while (j < self.out_dim) : (j += 1) {
-                    const og = b_out_grad[j];
-                    total_in_grad += og * silu_prime;
-                    for (0..4) |a| {
-                        const k_u = k_base + a;
-                        if (k_u < self.num_coeffs) {
-                            const c_idx = layer_coeffs_base + k_u * self.out_dim_padded + j;
-                            coeff_grads[c_idx] += og * b_vals[a];
-                            total_in_grad += og * bp_vals[a] * self.coeffs[c_idx];
+                    for (0..self.num_coeffs) |k| {
+                        const count = counts[k];
+                        if (count == 0) continue;
+                        const start_ptr = offsets[k];
+
+                        var acc_cg_0: f32 = 0.0;
+                        var acc_cg_1: f32 = 0.0;
+                        var acc_cg_2: f32 = 0.0;
+                        var acc_cg_3: f32 = 0.0;
+
+                        const c_idx_0 = layer_coeffs_base + (k + 0) * self.out_dim_padded + j;
+                        const w_0 = if (k + 0 < self.num_coeffs) self.coeffs[c_idx_0] else 0.0;
+                        const c_idx_1 = layer_coeffs_base + (k + 1) * self.out_dim_padded + j;
+                        const w_1 = if (k + 1 < self.num_coeffs) self.coeffs[c_idx_1] else 0.0;
+                        const c_idx_2 = layer_coeffs_base + (k + 2) * self.out_dim_padded + j;
+                        const w_2 = if (k + 2 < self.num_coeffs) self.coeffs[c_idx_2] else 0.0;
+                        const c_idx_3 = layer_coeffs_base + (k + 3) * self.out_dim_padded + j;
+                        const w_3 = if (k + 3 < self.num_coeffs) self.coeffs[c_idx_3] else 0.0;
+
+                        for (0..count) |c| {
+                            const idx = sorted_idx[start_ptr + c];
+                            const b = b_start + idx;
+                            const og = out_grad[b * self.out_dim + j];
+
+                            acc_cg_0 += og * b_vals_block[idx][0];
+                            acc_cg_1 += og * b_vals_block[idx][1];
+                            acc_cg_2 += og * b_vals_block[idx][2];
+                            acc_cg_3 += og * b_vals_block[idx][3];
+
+                            var in_g = og * silup_block[idx];
+                            in_g += og * bp_vals_block[idx][0] * w_0;
+                            in_g += og * bp_vals_block[idx][1] * w_1;
+                            in_g += og * bp_vals_block[idx][2] * w_2;
+                            in_g += og * bp_vals_block[idx][3] * w_3;
+
+                            in_grad[b * self.in_dim + i] += in_g;
                         }
+
+                        if (k + 0 < self.num_coeffs) coeff_grads[c_idx_0] += acc_cg_0;
+                        if (k + 1 < self.num_coeffs) coeff_grads[c_idx_1] += acc_cg_1;
+                        if (k + 2 < self.num_coeffs) coeff_grads[c_idx_2] += acc_cg_2;
+                        if (k + 3 < self.num_coeffs) coeff_grads[c_idx_3] += acc_cg_3;
                     }
                 }
-                b_in_grad[i] += total_in_grad;
             }
         }
     }

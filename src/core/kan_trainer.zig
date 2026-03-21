@@ -70,6 +70,7 @@ pub const KanTrainer = struct {
         scratch_grads: [][]f32,
         coeff_grads: [][]f32,
         out_grad: []f32,
+        bucket_scratch: []f32,
         allocator: mem.Allocator,
 
         pub fn init(allocator: mem.Allocator, net: KanNetwork, max_chunk_size: usize) !ThreadState {
@@ -92,6 +93,7 @@ pub const KanTrainer = struct {
                 c_grads[i] = try allocator.alloc(f32, size);
             }
             const o_grad = try allocator.alloc(f32, max_chunk_size * net.out_dim);
+            const b_scratch = try allocator.alloc(f32, max_chunk_size); // Plenty for 256 size bucket sort
 
             return ThreadState{ 
                 .activations = acts, 
@@ -99,6 +101,7 @@ pub const KanTrainer = struct {
                 .scratch_grads = s_grads, 
                 .coeff_grads = c_grads, 
                 .out_grad = o_grad,
+                .bucket_scratch = b_scratch,
                 .allocator = allocator 
             };
         }
@@ -109,6 +112,7 @@ pub const KanTrainer = struct {
             for (self.scratch_grads) |s| self.allocator.free(s);
             for (self.coeff_grads) |c| self.allocator.free(c);
             self.allocator.free(self.out_grad);
+            self.allocator.free(self.bucket_scratch);
             self.allocator.free(self.activations);
             self.allocator.free(self.jacobians);
             self.allocator.free(self.scratch_grads);
@@ -239,9 +243,8 @@ pub const KanTrainer = struct {
         task.local_loss.* = loss_acc;
 
         const const_activations = @as([][]const f32, @ptrCast(local_activations[0..net.layers.len+1]));
-        net.backward(const_activations, out_grad_soa, state.coeff_grads, local_scratch[0..net.layers.len], batch_size);
-    }
-
+        net.backward(const_activations, out_grad_soa, state.coeff_grads, local_scratch[0..net.layers.len], batch_size, state.bucket_scratch);
+        }
     fn poolRunWrapper(wait_group: *std.Thread.WaitGroup, task: TrainTask) void {
         defer wait_group.finish();
         trainTaskFunc(task);

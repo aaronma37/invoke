@@ -72,6 +72,7 @@ pub const KanNetwork = struct {
         layer_coeff_grads: [][]f32,
         scratch_grads: [][]f32,
         batch_size: usize,
+        bucket_scratch: []f32,
     ) void {
         var current_grad = out_grad;
         var i: usize = self.layers.len;
@@ -85,6 +86,7 @@ pub const KanNetwork = struct {
                 next_grad,
                 layer_coeff_grads[layer_idx],
                 batch_size,
+                bucket_scratch,
             );
             current_grad = next_grad;
         }
