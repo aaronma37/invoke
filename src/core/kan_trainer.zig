@@ -278,26 +278,63 @@ pub const KanTrainer = struct {
             }
         }
 
+        // Reduction: Hierarchical CCD-Local
+        const ccd_threads = 8;
         for (0..self.net.layers.len) |l| {
             const size = self.net.layers[l].in_dim * self.net.layers[l].num_coeffs * self.net.layers[l].out_dim_padded;
             const target_coeffs = self.net.layers[l].coeffs;
-            const accumulator = self.thread_states[0].coeff_grads[l];
             
-            for (1..num_threads) |t| {
+            // 1. CCD0 Reduction (Threads 0-7) -> thread_states[0]
+            for (1..ccd_threads) |t| {
                 if (t * chunk_size >= batch_size) break;
                 const src = self.thread_states[t].coeff_grads[l];
+                const acc = self.thread_states[0].coeff_grads[l];
                 var i: usize = 0;
                 const vec_len = 16;
                 const V = @Vector(vec_len, f32);
                 while (i + vec_len <= size) : (i += vec_len) {
                     const v_src: V = src[i..i+vec_len][0..vec_len].*;
-                    var v_acc: V = accumulator[i..i+vec_len][0..vec_len].*;
+                    var v_acc: V = acc[i..i+vec_len][0..vec_len].*;
                     v_acc += v_src;
-                    accumulator[i..i+vec_len][0..vec_len].* = v_acc;
+                    acc[i..i+vec_len][0..vec_len].* = v_acc;
                 }
-                while (i < size) : (i += 1) { accumulator[i] += src[i]; }
+                while (i < size) : (i += 1) { acc[i] += src[i]; }
             }
 
+            // 2. CCD1 Reduction (Threads 8-15) -> thread_states[8]
+            for (ccd_threads + 1 .. num_threads) |t| {
+                if (t * chunk_size >= batch_size) break;
+                const src = self.thread_states[t].coeff_grads[l];
+                const acc = self.thread_states[ccd_threads].coeff_grads[l];
+                var i: usize = 0;
+                const vec_len = 16;
+                const V = @Vector(vec_len, f32);
+                while (i + vec_len <= size) : (i += vec_len) {
+                    const v_src: V = src[i..i+vec_len][0..vec_len].*;
+                    var v_acc: V = acc[i..i+vec_len][0..vec_len].*;
+                    v_acc += v_src;
+                    acc[i..i+vec_len][0..vec_len].* = v_acc;
+                }
+                while (i < size) : (i += 1) { acc[i] += src[i]; }
+            }
+
+            // 3. Final Cross-CCD Merge (CCD1 -> CCD0)
+            const ccd0_acc = self.thread_states[0].coeff_grads[l];
+            const ccd1_acc = self.thread_states[ccd_threads].coeff_grads[l];
+            if (ccd_threads * chunk_size < batch_size) {
+                var i: usize = 0;
+                const vec_len = 16;
+                const V = @Vector(vec_len, f32);
+                while (i + vec_len <= size) : (i += vec_len) {
+                    const v_ccd1: V = ccd1_acc[i..i+vec_len][0..vec_len].*;
+                    var v_ccd0: V = ccd0_acc[i..i+vec_len][0..vec_len].*;
+                    v_ccd0 += v_ccd1;
+                    ccd0_acc[i..i+vec_len][0..vec_len].* = v_ccd0;
+                }
+                while (i < size) : (i += 1) { ccd0_acc[i] += ccd1_acc[i]; }
+            }
+
+            // 4. Normalize and Regularize
             const inv_batch = 1.0 / @as(f32, @floatFromInt(batch_size));
             var i: usize = 0;
             const vec_len = 16;
@@ -306,12 +343,12 @@ pub const KanTrainer = struct {
             const v_l2 = @as(V, @splat(self.lambda_l2));
 
             while (i + vec_len <= size) : (i += vec_len) {
-                const v_grad: V = accumulator[i..i+vec_len][0..vec_len].*;
+                const v_grad: V = ccd0_acc[i..i+vec_len][0..vec_len].*;
                 const v_coeffs: V = target_coeffs[i..i+vec_len][0..vec_len].*;
-                accumulator[i..i+vec_len][0..vec_len].* = (v_grad * v_inv) + (v_coeffs * v_l2);
+                ccd0_acc[i..i+vec_len][0..vec_len].* = (v_grad * v_inv) + (v_coeffs * v_l2);
             }
             while (i < size) : (i += 1) {
-                accumulator[i] = (accumulator[i] * inv_batch) + (target_coeffs[i] * self.lambda_l2);
+                ccd0_acc[i] = (ccd0_acc[i] * inv_batch) + (target_coeffs[i] * self.lambda_l2);
             }
         }
 
