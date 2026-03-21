@@ -41,23 +41,52 @@ pub const KanLayer = struct {
     pub fn forward(self: KanLayer, inputs: []const f32, outputs: []f32, batch_size: usize) void {
         @memset(outputs[0 .. batch_size * self.out_dim], 0.0);
 
+        const h = self.knots[1] - self.knots[0];
+        const inv_h = 1.0 / h;
+        const safe_min = self.knots[3];
+        const safe_max = self.knots[self.num_coeffs];
+
         for (0..batch_size) |b| {
             const batch_out = outputs[b * self.out_dim .. (b + 1) * self.out_dim];
             for (0..self.in_dim) |i| {
-                const x = inputs[b * self.in_dim + i];
-                const sigmoid = 1.0 / (1.0 + std.math.exp(-x));
-                const silu = x * sigmoid;
+                const x_raw = inputs[b * self.in_dim + i];
+                const sigmoid = 1.0 / (1.0 + std.math.exp(-x_raw));
+                const silu = x_raw * sigmoid;
+
+                const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
+                const span_float = (x - self.knots[0]) * inv_h;
+                const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
+
+                // Evaluate the 4 active basis functions ONCE per input
+                var b_vals: [4]f32 = .{0, 0, 0, 0};
+                var k_indices: [4]usize = .{0, 0, 0, 0};
+                var num_active: usize = 0;
+                
+                var k_iter: isize = span_idx - 3;
+                while (k_iter <= span_idx) : (k_iter += 1) {
+                    if (k_iter < 0 or k_iter >= @as(isize, @intCast(self.num_coeffs))) continue;
+                    const k_u = @as(usize, @intCast(k_iter));
+                    k_indices[num_active] = k_u;
+                    b_vals[num_active] = kan_spline.basis(k_u, 3, x, self.knots);
+                    num_active += 1;
+                }
 
                 const layer_coeffs_base = i * self.num_coeffs * self.out_dim;
+                
+                // 1. Apply SiLU base to all outputs
                 for (0..self.out_dim) |j| {
-                    batch_out[j] += silu; // SiLU base
+                    batch_out[j] += silu;
+                }
 
-                    var spline_val: f32 = 0.0;
-                    for (0..self.num_coeffs) |k| {
-                        const b_val = kan_spline.basis(k, kan_spline.SplineConfig.Order, x, self.knots);
-                        spline_val += b_val * self.coeffs[layer_coeffs_base + k * self.out_dim + j];
+                // 2. Accumulate spline values (Memory-contiguous inner loop over out_dim)
+                for (0..num_active) |a| {
+                    const b_val = b_vals[a];
+                    const coeff_idx_start = layer_coeffs_base + k_indices[a] * self.out_dim;
+                    const coeff_row = self.coeffs[coeff_idx_start .. coeff_idx_start + self.out_dim];
+                    
+                    for (0..self.out_dim) |j| {
+                        batch_out[j] += b_val * coeff_row[j];
                     }
-                    batch_out[j] += spline_val;
                 }
             }
         }
@@ -67,33 +96,62 @@ pub const KanLayer = struct {
         @memset(outputs[0 .. batch_size * self.out_dim], 0.0);
         @memset(jacobians[0 .. batch_size * self.out_dim * self.in_dim], 0.0);
 
+        const h = self.knots[1] - self.knots[0];
+        const inv_h = 1.0 / h;
+        const safe_min = self.knots[3];
+        const safe_max = self.knots[self.num_coeffs];
+
         for (0..batch_size) |b| {
             const batch_out = outputs[b * self.out_dim .. (b + 1) * self.out_dim];
             const batch_jac = jacobians[b * self.out_dim * self.in_dim .. (b + 1) * self.out_dim * self.in_dim];
             
             for (0..self.in_dim) |i| {
-                const x = inputs[b * self.in_dim + i];
-                const exp_nx = std.math.exp(-x);
+                const x_raw = inputs[b * self.in_dim + i];
+                const exp_nx = std.math.exp(-x_raw);
                 const sigmoid = 1.0 / (1.0 + exp_nx);
-                const silu = x * sigmoid;
-                const silu_prime = sigmoid * (1.0 + x * (1.0 - sigmoid));
+                const silu = x_raw * sigmoid;
+                const silu_prime = sigmoid * (1.0 + x_raw * (1.0 - sigmoid));
+
+                const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
+                const span_float = (x - self.knots[0]) * inv_h;
+                const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
+
+                // Evaluate the 4 active basis functions and derivatives ONCE per input
+                var b_vals: [4]f32 = .{0, 0, 0, 0};
+                var b_primes: [4]f32 = .{0, 0, 0, 0};
+                var k_indices: [4]usize = .{0, 0, 0, 0};
+                var num_active: usize = 0;
+                
+                var k_iter: isize = span_idx - 3;
+                while (k_iter <= span_idx) : (k_iter += 1) {
+                    if (k_iter < 0 or k_iter >= @as(isize, @intCast(self.num_coeffs))) continue;
+                    const k_u = @as(usize, @intCast(k_iter));
+                    k_indices[num_active] = k_u;
+                    b_vals[num_active] = kan_spline.basis(k_u, 3, x, self.knots);
+                    b_primes[num_active] = kan_spline.derivative(k_u, 3, x, self.knots);
+                    num_active += 1;
+                }
 
                 const layer_coeffs_base = i * self.num_coeffs * self.out_dim;
+                
+                // 1. Apply SiLU base to all outputs
                 for (0..self.out_dim) |j| {
                     batch_out[j] += silu;
                     batch_jac[j * self.in_dim + i] += silu_prime;
+                }
 
-                    var spline_val: f32 = 0.0;
-                    var spline_prime: f32 = 0.0;
-                    for (0..self.num_coeffs) |k| {
-                        const b_val = kan_spline.basis(k, kan_spline.SplineConfig.Order, x, self.knots);
-                        const b_prime = kan_spline.derivative(k, kan_spline.SplineConfig.Order, x, self.knots);
-                        const coeff = self.coeffs[layer_coeffs_base + k * self.out_dim + j];
-                        spline_val += b_val * coeff;
-                        spline_prime += b_prime * coeff;
+                // 2. Accumulate spline values and derivatives
+                for (0..num_active) |a| {
+                    const b_val = b_vals[a];
+                    const b_prime = b_primes[a];
+                    const coeff_idx_start = layer_coeffs_base + k_indices[a] * self.out_dim;
+                    const coeff_row = self.coeffs[coeff_idx_start .. coeff_idx_start + self.out_dim];
+                    
+                    for (0..self.out_dim) |j| {
+                        const coeff = coeff_row[j];
+                        batch_out[j] += b_val * coeff;
+                        batch_jac[j * self.in_dim + i] += b_prime * coeff;
                     }
-                    batch_out[j] += spline_val;
-                    batch_jac[j * self.in_dim + i] += spline_prime;
                 }
             }
         }
@@ -102,30 +160,60 @@ pub const KanLayer = struct {
     pub fn backward(self: KanLayer, inputs: []const f32, out_grad: []const f32, in_grad: []f32, coeff_grads: []f32, batch_size: usize) void {
         @memset(in_grad[0 .. batch_size * self.in_dim], 0.0);
 
+        const h = self.knots[1] - self.knots[0];
+        const inv_h = 1.0 / h;
+        const safe_min = self.knots[3];
+        const safe_max = self.knots[self.num_coeffs];
+
         for (0..batch_size) |b| {
             const b_out_grad = out_grad[b * self.out_dim .. (b + 1) * self.out_dim];
             const b_in_grad = in_grad[b * self.in_dim .. (b + 1) * self.in_dim];
 
             for (0..self.in_dim) |i| {
-                const x = inputs[b * self.in_dim + i];
-                const sigmoid = 1.0 / (1.0 + std.math.exp(-x));
-                const silu_prime = sigmoid * (1.0 + x * (1.0 - sigmoid));
+                const x_raw = inputs[b * self.in_dim + i];
+                const sigmoid = 1.0 / (1.0 + std.math.exp(-x_raw));
+                const silu_prime = sigmoid * (1.0 + x_raw * (1.0 - sigmoid));
+
+                const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
+                const span_float = (x - self.knots[0]) * inv_h;
+                const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
+
+                // Evaluate the 4 active basis functions and derivatives ONCE per input
+                var b_vals: [4]f32 = .{0, 0, 0, 0};
+                var b_primes: [4]f32 = .{0, 0, 0, 0};
+                var k_indices: [4]usize = .{0, 0, 0, 0};
+                var num_active: usize = 0;
+                
+                var k_iter: isize = span_idx - 3;
+                while (k_iter <= span_idx) : (k_iter += 1) {
+                    if (k_iter < 0 or k_iter >= @as(isize, @intCast(self.num_coeffs))) continue;
+                    const k_u = @as(usize, @intCast(k_iter));
+                    k_indices[num_active] = k_u;
+                    b_vals[num_active] = kan_spline.basis(k_u, 3, x, self.knots);
+                    b_primes[num_active] = kan_spline.derivative(k_u, 3, x, self.knots);
+                    num_active += 1;
+                }
 
                 var total_in_grad: f32 = 0.0;
                 const layer_coeffs_base = i * self.num_coeffs * self.out_dim;
                 
+                // 1. SiLU backprop contribution
                 for (0..self.out_dim) |j| {
-                    const og = b_out_grad[j];
-                    total_in_grad += og * silu_prime;
+                    total_in_grad += b_out_grad[j] * silu_prime;
+                }
 
-                    for (0..self.num_coeffs) |k| {
-                        const b_val = kan_spline.basis(k, kan_spline.SplineConfig.Order, x, self.knots);
-                        const b_prime = kan_spline.derivative(k, kan_spline.SplineConfig.Order, x, self.knots);
-                        const coeff_idx = layer_coeffs_base + k * self.out_dim + j;
-                        const coeff = self.coeffs[coeff_idx];
-                        
-                        coeff_grads[coeff_idx] += og * b_val;
-                        total_in_grad += og * b_prime * coeff;
+                // 2. Spline backprop contribution
+                for (0..num_active) |a| {
+                    const b_val = b_vals[a];
+                    const b_prime = b_primes[a];
+                    const coeff_idx_start = layer_coeffs_base + k_indices[a] * self.out_dim;
+                    const coeff_row = self.coeffs[coeff_idx_start .. coeff_idx_start + self.out_dim];
+                    const coeff_grad_row = coeff_grads[coeff_idx_start .. coeff_idx_start + self.out_dim];
+                    
+                    for (0..self.out_dim) |j| {
+                        const og = b_out_grad[j];
+                        coeff_grad_row[j] += og * b_val;
+                        total_in_grad += og * b_prime * coeff_row[j];
                     }
                 }
                 b_in_grad[i] += total_in_grad;
