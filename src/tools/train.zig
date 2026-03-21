@@ -37,8 +37,18 @@ pub fn main() !void {
     const dims = [_]usize{ 3, 32, 32, 1 }; 
     const num_coeffs = 16;
     
-    std.debug.print("Initializing KAN: 3 -> 32 -> 32 -> 1 (coeffs: {d}, eikonal: {s})\n", .{num_coeffs, if (use_eikonal) "ON" else "OFF"});
-    var trainer = try KanTrainer.initFixed(allocator, &dims, num_coeffs, batch_size);
+    // Resume if model exists, otherwise init fresh
+    var trainer: KanTrainer = undefined;
+    const model_exists = if (std.fs.cwd().access("model.kan", .{})) |_| true else |_| false;
+    
+    if (model_exists) {
+        std.debug.print("Resuming from existing model.kan...\n", .{});
+        const net = try KanNetwork.loadModel(allocator, "model.kan");
+        trainer = try KanTrainer.initWithNet(allocator, net, batch_size);
+    } else {
+        std.debug.print("Initializing new KAN: 3 -> 32 -> 32 -> 1\n", .{});
+        trainer = try KanTrainer.initFixed(allocator, &dims, num_coeffs, batch_size);
+    }
     defer trainer.deinit();
     
     trainer.lambda_eikonal = if (use_eikonal) 0.1 else 0.0;
@@ -49,20 +59,31 @@ pub fn main() !void {
     defer { allocator.free(inputs); allocator.free(targets); }
 
     var prng = std.Random.DefaultPrng.init(@as(u64, @intCast(std.time.timestamp())));
-    
     var best_loss: f32 = 1e10;
 
     std.debug.print("Starting training for {d} epochs (batch size: {d}, lr: {d:0.5})...\n", .{epochs, batch_size, lr});
     
     for (0..epochs) |epoch| {
-        // Safe 1D fetch (prevents memory corruption)
         loader.getBatch(batch_size, 1, &prng, inputs, targets);
         const batch = TrainingBatch{ .inputs = inputs, .targets = targets, .batch_size = batch_size };
-        
         const loss = try trainer.trainStep(batch);
         
         if (epoch % 100 == 0 or epoch == epochs - 1) {
-            std.debug.print("Epoch {d:5}: Loss = {d:0.6}\n", .{epoch, loss});
+            // MULTI-PROBE: Check center and corners
+            var acts = try allocator.alloc([]f32, trainer.net.layers.len + 1);
+            for (0..trainer.net.layers.len) |i| acts[i] = try allocator.alloc(f32, 3 * trainer.net.layers[i].in_dim);
+            acts[trainer.net.layers.len] = try allocator.alloc(f32, 3 * trainer.net.out_dim);
+            defer { for (acts) |a| allocator.free(a); allocator.free(acts); }
+            
+            const probe_pts = [_]f32{ 
+                0, 0, 0,    // Center
+                1, 1, 1,    // Far Corner
+                -1, -1, -1, // Near Corner
+            };
+            trainer.net.forward(&probe_pts, acts, 3);
+            
+            std.debug.print("Epoch {d:5}: Loss = {d:0.6} | Center: {d:0.3} | Corners: {d:0.3}, {d:0.3}\n", 
+                .{epoch, loss, acts[trainer.net.layers.len][0], acts[trainer.net.layers.len][1], acts[trainer.net.layers.len][2]});
             
             if (loss < best_loss) {
                 best_loss = loss;
@@ -70,6 +91,5 @@ pub fn main() !void {
             }
         }
     }
-
     std.debug.print("\nTraining complete. Best loss: {d:0.6}. Model saved to model.kan\n", .{best_loss});
 }

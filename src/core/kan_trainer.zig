@@ -135,6 +135,17 @@ pub const KanTrainer = struct {
         };
     }
 
+    pub fn initWithNet(allocator: mem.Allocator, net: KanNetwork, max_chunk_size: usize) !KanTrainer {
+        const states = try allocator.alloc(ThreadState, num_threads);
+        for (0..num_threads) |i| states[i] = try ThreadState.init(allocator, net, max_chunk_size);
+        return KanTrainer{
+            .net = net,
+            .optimizer = try AdamOptimizer.init(allocator, net),
+            .allocator = allocator,
+            .thread_states = states,
+        };
+    }
+
     pub fn deinit(self: *KanTrainer) void {
         for (self.thread_states) |*state| state.deinit();
         self.allocator.free(self.thread_states);
@@ -268,9 +279,14 @@ for (0..self.net.layers.len) |l| {
         for (0..size) |i| final_grads[l][i] += self.thread_states[t].coeff_grads[l][i];
     }
 
-    // NORMALIZE BY BATCH SIZE
+    // NORMALIZE BY BATCH SIZE + CLIP
     const inv_batch = 1.0 / @as(f32, @floatFromInt(batch_size));
-    for (final_grads[l]) |*g| g.* *= inv_batch;
+    for (final_grads[l]) |*g| {
+        g.* *= inv_batch;
+        // Clip to [-1, 1] range
+        if (g.* > 1.0) g.* = 1.0;
+        if (g.* < -1.0) g.* = -1.0;
+    }
 }
 
         defer { for (final_grads) |g| self.allocator.free(g); self.allocator.free(final_grads); }

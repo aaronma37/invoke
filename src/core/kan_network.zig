@@ -40,9 +40,12 @@ pub const KanNetwork = struct {
         activations: [][]f32,
         batch_size: usize,
     ) void {
-        @memcpy(activations[0], inputs[0..(batch_size * self.layers[0].in_dim)]);
+        const size = batch_size * self.layers[0].in_dim;
+        if (activations[0].ptr != inputs.ptr) {
+            @memcpy(activations[0][0..size], inputs[0..size]);
+        }
         for (0..self.layers.len) |i| {
-            self.layers[i].forward(activations[i], activations[i + 1], batch_size);
+            self.layers[i].forward(activations[i][0 .. batch_size * self.layers[i].in_dim], activations[i + 1][0 .. batch_size * self.layers[i].out_dim], batch_size);
         }
     }
 
