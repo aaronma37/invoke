@@ -29,9 +29,16 @@ Once the Zig architecture proves out, we will upgrade the existing Vulkan shader
 
 ### Phase 3: Fully Fused Vulkan Training (The Holy Grail)
 Currently, Vulkan is only used for rendering (inference). To make training blazingly fast, we will port the Zig backpropagation logic to the GPU.
-* PyTorch writes intermediate activations to VRAM, killing performance.
-* Our Vulkan training shader will perform the Forward Pass, hold the intermediate activations in Shared Memory, and immediately execute the Backward Pass within the same shader dispatch.
-* This is the exact technique used by NVIDIA's `tiny-cuda-nn` (Instant-NGP), applied to KANs.
+
+#### Training Architecture Blueprint
+To train at 1+ Billion GPS, we cannot use PyTorch's method of saving intermediate activations to global VRAM. Instead, we must write a custom **Fused Forward-Backward Kernel**:
+1. **Workgroup Memory (Shared RAM):** A Vulkan Compute Workgroup loads a batch of `(x, y, z)` inputs and their corresponding target SDF/Displacement values into `shared` memory.
+2. **Fused Forward Pass:** The workgroup evaluates the network (using the Precalc + Cooperative Matrix strategy from Phase 2). Crucially, the intermediate layer outputs (e.g., the 32 hidden neurons) are kept entirely in Subgroup Registers or Shared Memory.
+3. **Loss Calculation in Registers:** The loss function (e.g., L2 Distance) and the initial output gradients (`out_grad`) are calculated directly in register space.
+4. **Fused Backward Pass:** The workgroup immediately runs the backward pass in reverse. Because the Forward pass activations are still sitting in Shared Memory, the math can execute instantly. The kernel computes the coefficient gradients.
+5. **Atomic Accumulation:** Finally, the threads use `atomicAdd` to accumulate their local gradient calculations into a global gradient buffer in VRAM, which the Adam optimizer (a separate compute pass) will apply.
+
+This is the exact technique used by NVIDIA's `tiny-cuda-nn` (Instant-NGP), applied to KANs.
 
 ---
 
