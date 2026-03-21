@@ -44,18 +44,18 @@ test "Benchmark: Production-Sized Stress Test" {
 
     const batch_size = 32_768;
     
-    // Allocate AoS buffers
-    const inputs = try allocator.alloc(f32, batch_size * 3);
-    const targets = try allocator.alloc(f32, batch_size * 6);
-    defer allocator.free(inputs);
-    defer allocator.free(targets);
+    // Allocate SoA buffers directly
+    const inputs_soa = try allocator.alloc(f32, batch_size * 3);
+    const targets_soa = try allocator.alloc(f32, batch_size * 6);
+    defer allocator.free(inputs_soa);
+    defer allocator.free(targets_soa);
 
-    @memset(inputs, 0.5);
-    @memset(targets, 0.1);
+    @memset(inputs_soa, 0.5);
+    @memset(targets_soa, 0.1);
 
     const batch = TrainingBatch{
-        .inputs = inputs,
-        .targets = targets,
+        .inputs = inputs_soa,
+        .targets = targets_soa,
         .batch_size = batch_size,
     };
 

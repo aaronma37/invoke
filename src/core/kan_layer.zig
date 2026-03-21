@@ -65,54 +65,45 @@ pub const KanLayer = struct {
         const vec_len = 16;
         const V = @Vector(vec_len, f32);
 
-        // --- BLOCK-INPUT TILING ---
-        // We process tiles of points to keep weights in L1 cache
-        const TILE_SIZE = 128; 
-        var b_base: usize = 0;
-        while (b_base < batch_size) : (b_base += TILE_SIZE) {
-            const b_end = @min(b_base + TILE_SIZE, batch_size);
+        // AoS Point-Outer, Neuron-Inner -> Peak Performance
+        for (0..batch_size) |b| {
+            const batch_out = outputs[b * self.out_dim .. (b + 1) * self.out_dim];
             
             for (0..self.in_dim) |i| {
+                const x_raw = inputs[b * self.in_dim + i];
+                const silu = x_raw / (1.0 + kan_spline.fast_exp(-x_raw));
+
+                const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
+                const span_float = (x - self.knots[0]) * inv_h;
+                const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
+                const u = span_float - @as(f32, @floatFromInt(span_idx));
+
+                const b_vals = kan_spline.basisAll(u);
+                const k_base = @as(usize, @intCast(@max(0, span_idx - 3)));
                 const layer_coeffs_base = i * self.num_coeffs * self.out_dim_padded;
-                
-                for (b_base..b_end) |b| {
-                    const x_raw = inputs[b * self.in_dim + i];
-                    const silu = x_raw / (1.0 + kan_spline.fast_exp(-x_raw));
 
-                    const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
-                    const span_float = (x - self.knots[0]) * inv_h;
-                    const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
-                    const u = span_float - @as(f32, @floatFromInt(span_idx));
+                var j: usize = 0;
+                while (j + vec_len <= self.out_dim) : (j += vec_len) {
+                    var out_v: V = batch_out[j .. j + vec_len][0..vec_len].*;
+                    out_v += @as(V, @splat(silu));
 
-                    const b_vals = kan_spline.basisAll(u);
-                    const k_base = @as(usize, @intCast(@max(0, span_idx - 3)));
-                    
-                    const batch_out = outputs[b * self.out_dim .. (b + 1) * self.out_dim];
-
-                    var j: usize = 0;
-                    while (j + vec_len <= self.out_dim) : (j += vec_len) {
-                        var out_v: V = batch_out[j .. j + vec_len][0..vec_len].*;
-                        out_v += @as(V, @splat(silu));
-
-                        for (0..4) |a| {
-                            const k_u = k_base + a;
-                            if (k_u < self.num_coeffs) {
-                                const c_base = layer_coeffs_base + k_u * self.out_dim_padded + j;
-                                // Weights for this input are contiguous and stay in L1 for the whole tile!
-                                const weight_v: V = self.coeffs[c_base .. c_base + vec_len][0..vec_len].*;
-                                out_v += @as(V, @splat(b_vals[a])) * weight_v;
-                            }
+                    for (0..4) |a| {
+                        const k_u = k_base + a;
+                        if (k_u < self.num_coeffs) {
+                            const c_base = layer_coeffs_base + k_u * self.out_dim_padded + j;
+                            const weight_v: V = self.coeffs[c_base .. c_base + vec_len][0..vec_len].*;
+                            out_v += @as(V, @splat(b_vals[a])) * weight_v;
                         }
-                        batch_out[j .. j + vec_len][0..vec_len].* = out_v;
                     }
+                    batch_out[j .. j + vec_len][0..vec_len].* = out_v;
+                }
 
-                    while (j < self.out_dim) : (j += 1) {
-                        batch_out[j] += silu;
-                        for (0..4) |a| {
-                            const k_u = k_base + a;
-                            if (k_u < self.num_coeffs) {
-                                batch_out[j] += b_vals[a] * self.coeffs[layer_coeffs_base + k_u * self.out_dim_padded + j];
-                            }
+                while (j < self.out_dim) : (j += 1) {
+                    batch_out[j] += silu;
+                    for (0..4) |a| {
+                        const k_u = k_base + a;
+                        if (k_u < self.num_coeffs) {
+                            batch_out[j] += b_vals[a] * self.coeffs[layer_coeffs_base + k_u * self.out_dim_padded + j];
                         }
                     }
                 }
@@ -132,69 +123,59 @@ pub const KanLayer = struct {
         const vec_len = 16;
         const V = @Vector(vec_len, f32);
 
-        const TILE_SIZE = 128;
-        var b_base: usize = 0;
-        while (b_base < batch_size) : (b_base += TILE_SIZE) {
-            const b_end = @min(b_base + TILE_SIZE, batch_size);
-
+        for (0..batch_size) |b| {
+            const batch_out = outputs[b * self.out_dim .. (b + 1) * self.out_dim];
+            const batch_jac = jacobians[b * self.out_dim * self.in_dim .. (b + 1) * self.out_dim * self.in_dim];
+            
             for (0..self.in_dim) |i| {
+                const x_raw = inputs[b * self.in_dim + i];
+                const sigmoid = 1.0 / (1.0 + kan_spline.fast_exp(-x_raw));
+                const silu = x_raw * sigmoid;
+                const silu_prime = sigmoid * (1.0 + x_raw * (1.0 - sigmoid));
+
+                const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
+                const span_float = (x - self.knots[0]) * inv_h;
+                const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
+                const u = span_float - @as(f32, @floatFromInt(span_idx));
+
+                const b_vals = kan_spline.basisAll(u);
+                const bp_vals = kan_spline.derivativeAll(u, inv_h);
+                const k_base = @as(usize, @intCast(@max(0, span_idx - 3)));
                 const layer_coeffs_base = i * self.num_coeffs * self.out_dim_padded;
 
-                for (b_base..b_end) |b| {
-                    const batch_out = outputs[b * self.out_dim .. (b + 1) * self.out_dim];
-                    const batch_jac = jacobians[b * self.out_dim * self.in_dim .. (b + 1) * self.out_dim * self.in_dim];
+                var j: usize = 0;
+                while (j + vec_len <= self.out_dim) : (j += vec_len) {
+                    var out_v: V = batch_out[j .. j + vec_len][0..vec_len].*;
+                    out_v += @as(V, @splat(silu));
                     
-                    const x_raw = inputs[b * self.in_dim + i];
-                    const sigmoid = 1.0 / (1.0 + kan_spline.fast_exp(-x_raw));
-                    const silu = x_raw * sigmoid;
-                    const silu_prime = sigmoid * (1.0 + x_raw * (1.0 - sigmoid));
-
-                    const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
-                    const span_float = (x - self.knots[0]) * inv_h;
-                    const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
-                    const u = span_float - @as(f32, @floatFromInt(span_idx));
-
-                    const b_vals = kan_spline.basisAll(u);
-                    const bp_vals = kan_spline.derivativeAll(u, inv_h);
-                    const k_base = @as(usize, @intCast(@max(0, span_idx - 3)));
-
-                    var j: usize = 0;
-                    while (j + vec_len <= self.out_dim) : (j += vec_len) {
-                        var out_v: V = batch_out[j .. j + vec_len][0..vec_len].*;
-                        out_v += @as(V, @splat(silu));
-                        
-                        var jac_v: V = undefined;
-                        for (0..vec_len) |v_idx| {
-                            jac_v[v_idx] = batch_jac[(j + v_idx) * self.in_dim + i];
-                        }
-                        jac_v += @as(V, @splat(silu_prime));
-
-                        for (0..4) |a| {
-                            const k_u = k_base + a;
-                            if (k_u < self.num_coeffs) {
-                                const c_base = layer_coeffs_base + k_u * self.out_dim_padded + j;
-                                const weight_v: V = self.coeffs[c_base .. c_base + vec_len][0..vec_len].*;
-                                out_v += @as(V, @splat(b_vals[a])) * weight_v;
-                                jac_v += @as(V, @splat(bp_vals[a])) * weight_v;
-                            }
-                        }
-                        
-                        batch_out[j .. j + vec_len][0..vec_len].* = out_v;
-                        for (0..vec_len) |v_idx| {
-                            batch_jac[(j + v_idx) * self.in_dim + i] = jac_v[v_idx];
-                        }
+                    for (0..vec_len) |v_idx| {
+                        batch_jac[(j + v_idx) * self.in_dim + i] += silu_prime;
                     }
 
-                    while (j < self.out_dim) : (j += 1) {
-                        batch_out[j] += silu;
-                        batch_jac[j * self.in_dim + i] += silu_prime;
-                        for (0..4) |a| {
-                            const k_u = k_base + a;
-                            if (k_u < self.num_coeffs) {
-                                const coeff = self.coeffs[layer_coeffs_base + k_u * self.out_dim_padded + j];
-                                batch_out[j] += b_vals[a] * coeff;
-                                batch_jac[j * self.in_dim + i] += bp_vals[a] * coeff;
+                    for (0..4) |a| {
+                        const k_u = k_base + a;
+                        if (k_u < self.num_coeffs) {
+                            const c_base = layer_coeffs_base + k_u * self.out_dim_padded + j;
+                            const weight_v: V = self.coeffs[c_base .. c_base + vec_len][0..vec_len].*;
+                            out_v += @as(V, @splat(b_vals[a])) * weight_v;
+                            
+                            for (0..vec_len) |v_idx| {
+                                batch_jac[(j + v_idx) * self.in_dim + i] += bp_vals[a] * weight_v[v_idx];
                             }
+                        }
+                    }
+                    batch_out[j .. j + vec_len][0..vec_len].* = out_v;
+                }
+
+                while (j < self.out_dim) : (j += 1) {
+                    batch_out[j] += silu;
+                    batch_jac[j * self.in_dim + i] += silu_prime;
+                    for (0..4) |a| {
+                        const k_u = k_base + a;
+                        if (k_u < self.num_coeffs) {
+                            const coeff = self.coeffs[layer_coeffs_base + k_u * self.out_dim_padded + j];
+                            batch_out[j] += b_vals[a] * coeff;
+                            batch_jac[j * self.in_dim + i] += bp_vals[a] * coeff;
                         }
                     }
                 }
@@ -213,66 +194,60 @@ pub const KanLayer = struct {
         const vec_len = 16;
         const V = @Vector(vec_len, f32);
 
-        const TILE_SIZE = 128;
-        var b_base: usize = 0;
-        while (b_base < batch_size) : (b_base += TILE_SIZE) {
-            const b_end = @min(b_base + TILE_SIZE, batch_size);
+        for (0..batch_size) |b| {
+            const b_out_grad = out_grad[b * self.out_dim .. (b + 1) * self.out_dim];
+            const b_in_grad = in_grad[b * self.in_dim .. (b + 1) * self.in_dim];
 
             for (0..self.in_dim) |i| {
+                const x_raw = inputs[b * self.in_dim + i];
+                const sigmoid = 1.0 / (1.0 + kan_spline.fast_exp(-x_raw));
+                const silu_prime = sigmoid * (1.0 + x_raw * (1.0 - sigmoid));
+
+                const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
+                const span_float = (x - self.knots[0]) * inv_h;
+                const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
+                const u = span_float - @as(f32, @floatFromInt(span_idx));
+
+                const b_vals = kan_spline.basisAll(u);
+                const bp_vals = kan_spline.derivativeAll(u, inv_h);
+                const k_base = @as(usize, @intCast(@max(0, span_idx - 3)));
                 const layer_coeffs_base = i * self.num_coeffs * self.out_dim_padded;
 
-                for (b_base..b_end) |b| {
-                    const b_out_grad = out_grad[b * self.out_dim .. (b + 1) * self.out_dim];
-                    
-                    const x_raw = inputs[b * self.in_dim + i];
-                    const sigmoid = 1.0 / (1.0 + kan_spline.fast_exp(-x_raw));
-                    const silu_prime = sigmoid * (1.0 + x_raw * (1.0 - sigmoid));
+                var total_in_grad: f32 = 0.0;
+                var j: usize = 0;
+                while (j + vec_len <= self.out_dim) : (j += vec_len) {
+                    const og_v: V = b_out_grad[j .. j + vec_len][0..vec_len].*;
+                    var total_in_grad_v = og_v * @as(V, @splat(silu_prime));
 
-                    const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
-                    const span_float = (x - self.knots[0]) * inv_h;
-                    const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
-                    const u = span_float - @as(f32, @floatFromInt(span_idx));
-
-                    const b_vals = kan_spline.basisAll(u);
-                    const bp_vals = kan_spline.derivativeAll(u, inv_h);
-                    const k_base = @as(usize, @intCast(@max(0, span_idx - 3)));
-
-                    var total_in_grad: f32 = 0.0;
-                    var j: usize = 0;
-                    while (j + vec_len <= self.out_dim) : (j += vec_len) {
-                        const og_v: V = b_out_grad[j .. j + vec_len][0..vec_len].*;
-                        var total_in_grad_v = og_v * @as(V, @splat(silu_prime));
-
-                        for (0..4) |a| {
-                            const k_u = k_base + a;
-                            if (k_u < self.num_coeffs) {
-                                const c_base = layer_coeffs_base + k_u * self.out_dim_padded + j;
-                                const weight_v: V = self.coeffs[c_base .. c_base + vec_len][0..vec_len].*;
-                                var cg_v: V = coeff_grads[c_base .. c_base + vec_len][0..vec_len].*;
-                                
-                                cg_v += og_v * @as(V, @splat(b_vals[a]));
-                                total_in_grad_v += og_v * @as(V, @splat(bp_vals[a])) * weight_v;
-                                
-                                coeff_grads[c_base .. c_base + vec_len][0..vec_len].* = cg_v;
-                            }
-                        }
-                        total_in_grad += @reduce(.Add, total_in_grad_v);
-                    }
-
-                    while (j < self.out_dim) : (j += 1) {
-                        const og = b_out_grad[j];
-                        total_in_grad += og * silu_prime;
-                        for (0..4) |a| {
-                            const k_u = k_base + a;
-                            if (k_u < self.num_coeffs) {
-                                const c_idx = layer_coeffs_base + k_u * self.out_dim_padded + j;
-                                coeff_grads[c_idx] += og * b_vals[a];
-                                total_in_grad += og * bp_vals[a] * self.coeffs[c_idx];
-                            }
+                    for (0..4) |a| {
+                        const k_u = k_base + a;
+                        if (k_u < self.num_coeffs) {
+                            const c_base = layer_coeffs_base + k_u * self.out_dim_padded + j;
+                            const weight_v: V = self.coeffs[c_base .. c_base + vec_len][0..vec_len].*;
+                            var cg_v: V = coeff_grads[c_base .. c_base + vec_len][0..vec_len].*;
+                            
+                            cg_v += og_v * @as(V, @splat(b_vals[a]));
+                            total_in_grad_v += og_v * @as(V, @splat(bp_vals[a])) * weight_v;
+                            
+                            coeff_grads[c_base .. c_base + vec_len][0..vec_len].* = cg_v;
                         }
                     }
-                    in_grad[b * self.in_dim + i] += total_in_grad;
+                    total_in_grad += @reduce(.Add, total_in_grad_v);
                 }
+
+                while (j < self.out_dim) : (j += 1) {
+                    const og = b_out_grad[j];
+                    total_in_grad += og * silu_prime;
+                    for (0..4) |a| {
+                        const k_u = k_base + a;
+                        if (k_u < self.num_coeffs) {
+                            const c_idx = layer_coeffs_base + k_u * self.out_dim_padded + j;
+                            coeff_grads[c_idx] += og * b_vals[a];
+                            total_in_grad += og * bp_vals[a] * self.coeffs[c_idx];
+                        }
+                    }
+                }
+                b_in_grad[i] += total_in_grad;
             }
         }
     }
@@ -289,16 +264,8 @@ test "KanLayer: No Accumulation Sanity" {
     defer allocator.free(output1);
     defer allocator.free(output2);
 
-    // Run first time
     layer.forward(&input, output1, 1);
-    
-    // Run 10 more times
-    for (0..10) |_| {
-        layer.forward(&input, output2, 1);
-    }
+    for (0..10) |_| { layer.forward(&input, output2, 1); }
 
-    // Verify output2 is identical to output1 (no accumulation)
-    for (0..4) |i| {
-        try std.testing.expectEqual(output1[i], output2[i]);
-    }
+    for (0..4) |i| { try std.testing.expectEqual(output1[i], output2[i]); }
 }

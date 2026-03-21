@@ -25,19 +25,20 @@ test "Pipeline: Basic SDF Sphere Training" {
             const x = rand.float(f32) * 2.0 - 1.0;
             const y = rand.float(f32) * 2.0 - 1.0;
             const z = rand.float(f32) * 2.0 - 1.0;
-            inputs[b * 3 + 0] = x;
-            inputs[b * 3 + 1] = y;
-            inputs[b * 3 + 2] = z;
-            targets[b * 1 + 0] = @sqrt(x*x + y*y + z*z) - 0.5;
+            // Inputs are SoA
+            inputs[0 * batch_size + b] = x;
+            inputs[1 * batch_size + b] = y;
+            inputs[2 * batch_size + b] = z;
+            targets[0 * batch_size + b] = @sqrt(x*x + y*y + z*z) - 0.5;
         }
         const batch = TrainingBatch{ .inputs = inputs, .targets = targets, .batch_size = batch_size };
         _ = try trainer.trainStep(batch);
     }
 
-    const probe_in_aos = [_]f32{ 
-        0, 0, 0, 
-        0.5, 0, 0, 
-        1.0, 0, 0 
+    const probe_in_soa = [_]f32{ 
+        0, 0.5, 1.0, // X
+        0, 0, 0,     // Y
+        0, 0, 0      // Z
     };
 
     const probe_out = try allocator.alloc(f32, 3 * trainer.net.out_dim);
@@ -48,9 +49,10 @@ test "Pipeline: Basic SDF Sphere Training" {
     probe_acts[trainer.net.layers.len] = probe_out;
     defer { for (probe_acts[0..trainer.net.layers.len]) |a| allocator.free(a); allocator.free(probe_acts); }
 
-    trainer.net.forward(&probe_in_aos, probe_acts, 3);
+    trainer.net.forward(&probe_in_soa, probe_acts, 3);
     
     std.debug.print("\nSDF Sphere Test Results:\n", .{});
+    // probe_out is SoA: [out_dim][3]
     std.debug.print("  Center (0,0,0): {d:0.4} (expected -0.5)\n", .{probe_out[0]});
     std.debug.print("  Surface (0.5,0,0): {d:0.4} (expected 0.0)\n", .{probe_out[1]});
     std.debug.print("  Outside (1,0,0): {d:0.4} (expected 0.5)\n", .{probe_out[2]});
@@ -76,15 +78,16 @@ test "Pipeline: Basic UV Displacement Training" {
     // Train on a "constant displacement" sphere (radius 0.7)
     for (0..5000) |_| {
         for (0..batch_size) |b| {
-            inputs[b * 2 + 0] = rand.float(f32); // u
-            inputs[b * 2 + 1] = rand.float(f32); // v
-            targets[b * 1 + 0] = 0.7;
+            // Inputs are SoA
+            inputs[0 * batch_size + b] = rand.float(f32); // u
+            inputs[1 * batch_size + b] = rand.float(f32); // v
+            targets[0 * batch_size + b] = 0.7;
         }
         const batch = TrainingBatch{ .inputs = inputs, .targets = targets, .batch_size = batch_size };
         _ = try trainer.trainStep(batch);
     }
 
-    const test_uv_aos = [_]f32{ 0.5, 0.5 };
+    const test_uv_soa = [_]f32{ 0.5, 0.5 };
     const test_out = try allocator.alloc(f32, 1);
     defer allocator.free(test_out);
 
@@ -93,7 +96,7 @@ test "Pipeline: Basic UV Displacement Training" {
     test_acts[trainer.net.layers.len] = test_out;
     defer { for (test_acts[0..trainer.net.layers.len]) |a| allocator.free(a); allocator.free(test_acts); }
 
-    trainer.net.forward(&test_uv_aos, test_acts, 1);
+    trainer.net.forward(&test_uv_soa, test_acts, 1);
     
     std.debug.print("UV Displacement Test - Disp at (0.5, 0.5): {d:0.4} (expected 0.7)\n", .{test_out[0]});
     try std.testing.expect(test_out[0] > 0.6 and test_out[0] < 0.8);

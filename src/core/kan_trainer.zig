@@ -120,7 +120,7 @@ pub const KanTrainer = struct {
     optimizer: AdamOptimizer,
     allocator: mem.Allocator,
     thread_states: []ThreadState,
-    pool: *std.Thread.Pool, // MUST BE A POINTER to prevent move-invalidated mutexes
+    pool: *std.Thread.Pool,
     task_type: TaskType = .sdf,
     lambda_shape: f32 = 1.0,
     lambda_l2: f32 = 0.0001,
@@ -196,8 +196,8 @@ pub const KanTrainer = struct {
         const net = task.trainer.net;
         const state = &task.trainer.thread_states[task.state_idx];
         
-        const local_inputs_aos = task.batch.inputs[task.start_idx * net.layers[0].in_dim .. task.end_idx * net.layers[0].in_dim];
-        const local_targets_aos = task.batch.targets[task.start_idx * net.out_dim .. task.end_idx * net.out_dim];
+        const global_inputs_soa = task.batch.inputs;
+        const global_targets_soa = task.batch.targets;
 
         var local_activations: [16][]f32 = undefined;
         for (0..net.layers.len + 1) |i| {
@@ -209,30 +209,37 @@ pub const KanTrainer = struct {
 
         for (state.coeff_grads) |g| @memset(g, 0.0);
         
-        @memcpy(local_activations[0][0 .. batch_size * net.layers[0].in_dim], local_inputs_aos);
+        // Zero-copy SoA slicing
+        const in_dim = net.layers[0].in_dim;
+        const total_batch = task.batch.batch_size;
+        for (0..in_dim) |i| {
+            const src_row = global_inputs_soa[i * total_batch + task.start_idx .. i * total_batch + task.end_idx];
+            @memcpy(local_activations[0][i * batch_size .. (i + 1) * batch_size], src_row);
+        }
 
         net.forward(local_activations[0], local_activations[0 .. net.layers.len + 1], batch_size);
 
         const out_dim = net.out_dim;
-        const final_acts_aos = local_activations[net.layers.len];
-        const out_grad_aos = state.out_grad[0 .. batch_size * out_dim];
-        @memset(out_grad_aos, 0.0);
+        const final_acts_soa = local_activations[net.layers.len];
+        const out_grad_soa = state.out_grad[0 .. batch_size * out_dim];
+        @memset(out_grad_soa, 0.0);
 
         var loss_acc: f32 = 0.0;
-        for (0..batch_size) |b| {
-            for (0..out_dim) |d| {
-                const pred = final_acts_aos[b * out_dim + d];
-                const target = local_targets_aos[b * out_dim + d];
-                const diff = pred - target;
-                const weight = if (task.trainer.task_type == .sdf) (if (d == 0) task.trainer.lambda_shape else 1.0) else 1.0;
+        for (0..out_dim) |d| {
+            const pred_row = final_acts_soa[d * batch_size .. (d + 1) * batch_size];
+            const target_row = global_targets_soa[d * total_batch + task.start_idx .. d * total_batch + task.end_idx];
+            const weight = if (task.trainer.task_type == .sdf) (if (d == 0) task.trainer.lambda_shape else 1.0) else 1.0;
+            
+            for (0..batch_size) |b| {
+                const diff = pred_row[b] - target_row[b];
                 loss_acc += 0.5 * weight * diff * diff;
-                out_grad_aos[b * out_dim + d] = weight * diff;
+                out_grad_soa[d * batch_size + b] = weight * diff;
             }
         }
         task.local_loss.* = loss_acc;
 
         const const_activations = @as([][]const f32, @ptrCast(local_activations[0..net.layers.len+1]));
-        net.backward(const_activations, out_grad_aos, state.coeff_grads, local_scratch[0..net.layers.len], batch_size);
+        net.backward(const_activations, out_grad_soa, state.coeff_grads, local_scratch[0..net.layers.len], batch_size);
     }
 
     fn poolRunWrapper(wait_group: *std.Thread.WaitGroup, task: TrainTask) void {
@@ -278,13 +285,11 @@ pub const KanTrainer = struct {
             }
         }
 
-        // Reduction: Hierarchical CCD-Local
         const ccd_threads = 8;
         for (0..self.net.layers.len) |l| {
             const size = self.net.layers[l].in_dim * self.net.layers[l].num_coeffs * self.net.layers[l].out_dim_padded;
             const target_coeffs = self.net.layers[l].coeffs;
             
-            // 1. CCD0 Reduction (Threads 0-7) -> thread_states[0]
             for (1..ccd_threads) |t| {
                 if (t * chunk_size >= batch_size) break;
                 const src = self.thread_states[t].coeff_grads[l];
@@ -301,7 +306,6 @@ pub const KanTrainer = struct {
                 while (i < size) : (i += 1) { acc[i] += src[i]; }
             }
 
-            // 2. CCD1 Reduction (Threads 8-15) -> thread_states[8]
             for (ccd_threads + 1 .. num_threads) |t| {
                 if (t * chunk_size >= batch_size) break;
                 const src = self.thread_states[t].coeff_grads[l];
@@ -318,7 +322,6 @@ pub const KanTrainer = struct {
                 while (i < size) : (i += 1) { acc[i] += src[i]; }
             }
 
-            // 3. Final Cross-CCD Merge (CCD1 -> CCD0)
             const ccd0_acc = self.thread_states[0].coeff_grads[l];
             const ccd1_acc = self.thread_states[ccd_threads].coeff_grads[l];
             if (ccd_threads * chunk_size < batch_size) {
@@ -334,7 +337,6 @@ pub const KanTrainer = struct {
                 while (i < size) : (i += 1) { ccd0_acc[i] += ccd1_acc[i]; }
             }
 
-            // 4. Normalize and Regularize
             const inv_batch = 1.0 / @as(f32, @floatFromInt(batch_size));
             var i: usize = 0;
             const vec_len = 16;
