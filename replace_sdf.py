@@ -1,24 +1,6 @@
-#version 450
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+import re
 
-layout(set = 0, binding = 0) buffer KanWeights { float coeffs[]; } kan;
-layout(set = 0, binding = 1) buffer Field { float density[]; } field;
-
-layout(push_constant) uniform PC {
-    uint grid_size;
-    float grid_bias;
-    float padding[2];
-} pc;
-
-float kan_basis(float t) {
-    if (t < 0.0 || t >= 4.0) return 0.0;
-    if (t < 1.0) return 0.16666667 * t * t * t;
-    if (t < 2.0) { float t1 = t - 1.0; return 0.16666667 * (-3.0 * t1 * t1 * t1 + 3.0 * t1 * t1 + 3.0 * t1 + 1.0); }
-    if (t < 3.0) { float t2 = t - 2.0; return 0.16666667 * (3.0 * t2 * t2 * t2 - 6.0 * t2 * t2 + 4.0); }
-    float t3 = t - 3.0; return 0.16666667 * (1.0 - t3) * (1.0 - t3) * (1.0 - t3);
-}
-
-float evaluate_kan_sdf(vec3 p) {
+NEW_BODY = """float evaluate_kan_sdf(vec3 p) {
     const float h = 2.0 / 13.0;
     float box = max(max(abs(p.x), abs(p.y)), abs(p.z));
     float fade = smoothstep(1.1, 1.0, box);
@@ -67,7 +49,7 @@ float evaluate_kan_sdf(vec3 p) {
     }
 
     // --- Layer 2 Pre-calculation ---
-    int l2_offset = 3 * 16 * 32;
+    uint l2_offset = 3 * 16 * 32;
     float l2_silu[32];
     float l2_b_vals[32][4];
     int l2_k_idx[32][4];
@@ -110,7 +92,7 @@ float evaluate_kan_sdf(vec3 p) {
     }
 
     // --- Layer 3 Pre-calculation & Accumulation ---
-    int l3_offset = l2_offset + (32 * 16 * 32);
+    uint l3_offset = l2_offset + (32 * 16 * 32);
     float final_sdf = 0.0;
     
     float l3_silu[32];
@@ -144,12 +126,25 @@ float evaluate_kan_sdf(vec3 p) {
             }
         }
     }
-    return final_sdf + pc.grid_bias;
-}
+"""
 
-void main() {
-    uvec3 id = gl_GlobalInvocationID.xyz;
-    if (id.x >= pc.grid_size || id.y >= pc.grid_size || id.z >= pc.grid_size) return;
-    vec3 p = (vec3(id) / float(pc.grid_size - 1)) * 2.0 - 1.0;
-    field.density[id.x + id.y * pc.grid_size + id.z * pc.grid_size * pc.grid_size] = evaluate_kan_sdf(p);
-}
+def process_file(filepath, ret_stmt):
+    with open(filepath, 'r') as f:
+        content = f.read()
+
+    # Find float evaluate_kan_sdf(vec3 p) { ... }
+    pattern = r"float evaluate_kan_sdf\(vec3 p\)\s*\{.*?(return .*?;)\s*\}"
+    
+    def replacer(match):
+        ret = match.group(1)
+        # return final_sdf ...
+        return NEW_BODY + "    " + ret + "\n}"
+
+    new_content = re.sub(pattern, replacer, content, flags=re.DOTALL)
+    
+    with open(filepath, 'w') as f:
+        f.write(new_content)
+
+process_file("projects/kan_viewer/render.comp", "return final_sdf;")
+process_file("projects/kan_viewer/slice.comp", "return final_sdf + pc.bias;")
+process_file("projects/kan_viewer/field.comp", "return final_sdf + pc.grid_bias;")

@@ -63,28 +63,39 @@ pub const KanLayer = struct {
         const vec_len = 16;
         const V = @Vector(vec_len, f32);
         
-        // We accumulate up to 64 neurons in registers
         const MAX_VECS = 4;
         const num_vecs = (self.out_dim + vec_len - 1) / vec_len;
+        
+        std.debug.assert(self.in_dim <= 128);
 
         for (0..batch_size) |b| {
-            var acc_regs: [MAX_VECS]V = undefined;
-            for (0..num_vecs) |v| acc_regs[v] = @as(V, @splat(0.0));
+            // --- PASS 1: PRECALCULATE MATH ---
+            var silu_buf: [128]f32 = undefined;
+            var k_base_buf: [128]usize = undefined;
+            var b_vals_buf: [128][4]f32 = undefined;
 
             for (0..self.in_dim) |i| {
                 const x_raw = inputs[b * self.in_dim + i];
-                const silu = x_raw / (1.0 + kan_spline.fast_exp(-x_raw));
+                silu_buf[i] = x_raw / (1.0 + kan_spline.fast_exp(-x_raw));
 
                 const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
                 const span_float = (x - self.knots[0]) * inv_h;
                 const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
                 const u = span_float - @as(f32, @floatFromInt(span_idx));
 
-                const b_vals = kan_spline.basisAll(u);
-                const k_base = @as(usize, @intCast(@max(0, span_idx - 3)));
-                const layer_coeffs_base = i * self.num_coeffs * self.out_dim_padded;
+                b_vals_buf[i] = kan_spline.basisAll(u);
+                k_base_buf[i] = @as(usize, @intCast(@max(0, span_idx - 3)));
+            }
 
-                const silu_v = @as(V, @splat(silu));
+            var acc_regs: [MAX_VECS]V = undefined;
+            for (0..num_vecs) |v| acc_regs[v] = @as(V, @splat(0.0));
+
+            // --- PASS 2: PURE FMA ---
+            for (0..self.in_dim) |i| {
+                const layer_coeffs_base = i * self.num_coeffs * self.out_dim_padded;
+                const silu_v = @as(V, @splat(silu_buf[i]));
+                const b_vals = b_vals_buf[i];
+                const k_base = k_base_buf[i];
                 
                 var v: usize = 0;
                 while (v < num_vecs) : (v += 1) {
@@ -129,34 +140,58 @@ pub const KanLayer = struct {
 
         const vec_len = 16;
         const V = @Vector(vec_len, f32);
+        
+        const MAX_VECS = 4;
+        const num_vecs = (self.out_dim + vec_len - 1) / vec_len;
+
+        std.debug.assert(self.in_dim <= 128);
 
         for (0..batch_size) |b| {
-            const batch_out = outputs[b * self.out_dim .. (b + 1) * self.out_dim];
-            const batch_jac = jacobians[b * self.out_dim * self.in_dim .. (b + 1) * self.out_dim * self.in_dim];
-            
+            // --- PASS 1: PRECALCULATE MATH ---
+            var silu_buf: [128]f32 = undefined;
+            var silup_buf: [128]f32 = undefined;
+            var k_base_buf: [128]usize = undefined;
+            var b_vals_buf: [128][4]f32 = undefined;
+            var bp_vals_buf: [128][4]f32 = undefined;
+
             for (0..self.in_dim) |i| {
                 const x_raw = inputs[b * self.in_dim + i];
                 const sigmoid = 1.0 / (1.0 + kan_spline.fast_exp(-x_raw));
-                const silu = x_raw * sigmoid;
-                const silu_prime = sigmoid * (1.0 + x_raw * (1.0 - sigmoid));
+                silu_buf[i] = x_raw * sigmoid;
+                silup_buf[i] = sigmoid * (1.0 + x_raw * (1.0 - sigmoid));
 
                 const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
                 const span_float = (x - self.knots[0]) * inv_h;
                 const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
                 const u = span_float - @as(f32, @floatFromInt(span_idx));
 
-                const b_vals = kan_spline.basisAll(u);
-                const bp_vals = kan_spline.derivativeAll(u, inv_h);
-                const k_base = @as(usize, @intCast(@max(0, span_idx - 3)));
+                b_vals_buf[i] = kan_spline.basisAll(u);
+                bp_vals_buf[i] = kan_spline.derivativeAll(u, inv_h);
+                k_base_buf[i] = @as(usize, @intCast(@max(0, span_idx - 3)));
+            }
+
+            // --- PASS 2: FUSED FMA ---
+            var acc_regs: [MAX_VECS]V = undefined;
+            for (0..num_vecs) |v| acc_regs[v] = @as(V, @splat(0.0));
+
+            for (0..self.in_dim) |i| {
+                const silu_v = @as(V, @splat(silu_buf[i]));
+                const silup = silup_buf[i];
+                const b_vals = b_vals_buf[i];
+                const bp_vals = bp_vals_buf[i];
+                const k_base = k_base_buf[i];
                 const layer_coeffs_base = i * self.num_coeffs * self.out_dim_padded;
 
-                var j: usize = 0;
-                while (j + vec_len <= self.out_dim) : (j += vec_len) {
-                    var out_v: V = batch_out[j .. j + vec_len][0..vec_len].*;
-                    out_v += @as(V, @splat(silu));
-                    
+                var v: usize = 0;
+                while (v < num_vecs) : (v += 1) {
+                    const j = v * vec_len;
+                    var out_v = acc_regs[v] + silu_v;
+
+                    // Write jacobians explicitly (since they are strided by in_dim)
                     for (0..vec_len) |v_idx| {
-                        batch_jac[(j + v_idx) * self.in_dim + i] += silu_prime;
+                        if (j + v_idx < self.out_dim) {
+                            jacobians[b * self.out_dim * self.in_dim + (j + v_idx) * self.in_dim + i] += silup;
+                        }
                     }
 
                     for (0..4) |a| {
@@ -167,24 +202,26 @@ pub const KanLayer = struct {
                             out_v += @as(V, @splat(b_vals[a])) * weight_v;
                             
                             for (0..vec_len) |v_idx| {
-                                batch_jac[(j + v_idx) * self.in_dim + i] += bp_vals[a] * weight_v[v_idx];
+                                if (j + v_idx < self.out_dim) {
+                                    jacobians[b * self.out_dim * self.in_dim + (j + v_idx) * self.in_dim + i] += bp_vals[a] * weight_v[v_idx];
+                                }
                             }
                         }
                     }
-                    batch_out[j .. j + vec_len][0..vec_len].* = out_v;
+                    acc_regs[v] = out_v;
                 }
+            }
 
-                while (j < self.out_dim) : (j += 1) {
-                    batch_out[j] += silu;
-                    batch_jac[j * self.in_dim + i] += silu_prime;
-                    for (0..4) |a| {
-                        const k_u = k_base + a;
-                        if (k_u < self.num_coeffs) {
-                            const coeff = self.coeffs[layer_coeffs_base + k_u * self.out_dim_padded + j];
-                            batch_out[j] += b_vals[a] * coeff;
-                            batch_jac[j * self.in_dim + i] += bp_vals[a] * coeff;
-                        }
-                    }
+            // Write registers back to memory ONCE per point
+            const batch_out = outputs[b * self.out_dim .. (b + 1) * self.out_dim];
+            var j: usize = 0;
+            var v: usize = 0;
+            while (j + vec_len <= self.out_dim) : ({ j += vec_len; v += 1; }) {
+                batch_out[j .. j + vec_len][0..vec_len].* = acc_regs[v];
+            }
+            if (j < self.out_dim) {
+                for (j..self.out_dim) |rem_j| {
+                    batch_out[rem_j] = acc_regs[v][rem_j - j];
                 }
             }
         }
