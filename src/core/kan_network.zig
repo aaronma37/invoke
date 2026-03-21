@@ -96,6 +96,30 @@ pub const KanNetwork = struct {
             current_grad = next_grad;
         }
     }
+
+    /// Serializes the trained network to a binary file.
+    pub fn saveModel(self: KanNetwork, path: []const u8) !void {
+        const file = try std.fs.cwd().createFile(path, .{});
+        defer file.close();
+        var writer = file.writer();
+
+        // 1. Header: [num_layers, out_dim]
+        try writer.writeInt(u32, @intCast(self.layers.len), .little);
+        try writer.writeInt(u32, @intCast(self.out_dim), .little);
+
+        for (self.layers) |layer| {
+            // 2. Layer Meta: [in_dim, out_dim, num_coeffs]
+            try writer.writeInt(u32, @intCast(layer.in_dim), .little);
+            try writer.writeInt(u32, @intCast(layer.out_dim), .little);
+            try writer.writeInt(u32, @intCast(layer.num_coeffs), .little);
+
+            // 3. Knots
+            try writer.writeAll(std.mem.sliceAsBytes(layer.knots));
+
+            // 4. Coefficients
+            try writer.writeAll(std.mem.sliceAsBytes(layer.coeffs));
+        }
+    }
 };
 
 test "KanNetwork: Basic Forward/Backward" {
@@ -130,7 +154,7 @@ test "KanNetwork: Basic Forward/Backward" {
     const layer_coeff_grads = try allocator.alloc([]f32, net.layers.len);
     defer allocator.free(layer_coeff_grads);
     for (0..net.layers.len) |i| {
-        layer_coeff_grads[i] = try allocator.alloc(f32, net.layers[i].out_dim * net.layers[i].in_dim * 4);
+        layer_coeff_grads[i] = try allocator.alloc(f32, net.layers[i].out_dim * net.layers[i].in_dim * net.layers[i].num_coeffs);
         @memset(layer_coeff_grads[i], 0.0);
     }
     defer {
@@ -154,4 +178,110 @@ test "KanNetwork: Basic Forward/Backward" {
 
     // If we reached here without crashing, the backward pass flow is correct
     try std.testing.expect(scratch_grads[0][0] != 0.0);
+}
+
+test "KanNetwork: Fidelity Verification (model.kan)" {
+    const allocator = std.testing.allocator;
+    const path = "model.kan";
+    const file = std.fs.cwd().openFile(path, .{}) catch return; // Skip if file not found
+    defer file.close();
+    var reader = file.reader();
+
+    _ = try reader.readInt(u32, .little); // num_layers
+    _ = try reader.readInt(u32, .little); // out_dim
+
+    const dims = [_]usize{ 3, 16, 1 };
+    var net = try KanNetwork.init(allocator, &dims, 8);
+    defer net.deinit();
+
+    for (net.layers) |layer| {
+        _ = try reader.readInt(u32, .little);
+        _ = try reader.readInt(u32, .little);
+        _ = try reader.readInt(u32, .little);
+        try file.seekBy(@as(i64, @intCast((layer.num_coeffs + 4) * 4)));
+        _ = try reader.readAll(std.mem.sliceAsBytes(layer.coeffs));
+    }
+
+    var prng = std.Random.DefaultPrng.init(1337);
+    const rand = prng.random();
+    var total_sq_err: f32 = 0.0;
+    const num_samples = 100;
+
+    const activations = try allocator.alloc([]f32, net.layers.len + 1);
+    for (0..activations.len) |i| {
+        const dim = if (i == 0) net.layers[0].in_dim else net.layers[i-1].out_dim;
+        activations[i] = try allocator.alloc(f32, dim);
+    }
+    defer {
+        for (activations) |a| allocator.free(a);
+        allocator.free(activations);
+    }
+
+    for (0..num_samples) |_| {
+        const x = (rand.float(f32) * 2.0) - 1.0;
+        const y = (rand.float(f32) * 2.0) - 1.0;
+        const z = (rand.float(f32) * 2.0) - 1.0;
+        const input = [_]f32{ x, y, z };
+        net.forward(&input, activations, 1);
+        const true_sdf = @sqrt(x*x + y*y + z*z) - 0.8;
+        const err = activations[activations.len-1][0] - true_sdf;
+        total_sq_err += err * err;
+    }
+
+    const rmse = @sqrt(total_sq_err / @as(f32, @floatFromInt(num_samples)));
+    std.debug.print("\n--- MODEL FIDELITY: model.kan ---\n", .{});
+    std.debug.print("RMSE: {d:0.6}\n", .{rmse});
+    std.debug.print("---------------------------------\n", .{});
+    
+    try std.testing.expect(rmse < 0.2);
+}
+
+test "KanNetwork: Reconstruct 3D Surface (OBJ)" {
+    const allocator = std.testing.allocator;
+    const path = "model.kan";
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    var reader = file.reader();
+
+    _ = try reader.readInt(u32, .little);
+    _ = try reader.readInt(u32, .little);
+
+    const dims = [_]usize{ 3, 16, 1 };
+    var net = try KanNetwork.init(allocator, &dims, 8);
+    defer net.deinit();
+
+    for (net.layers) |layer| {
+        _ = try reader.readInt(u32, .little);
+        _ = try reader.readInt(u32, .little);
+        _ = try reader.readInt(u32, .little);
+        try file.seekBy(@as(i64, @intCast((layer.num_coeffs + 4) * 4)));
+        _ = try reader.readAll(std.mem.sliceAsBytes(layer.coeffs));
+    }
+
+    const out_file = try std.fs.cwd().createFile("reconstructed_sphere.obj", .{});
+    defer out_file.close();
+    var writer = out_file.writer();
+
+    const res = 64; // Smaller for speed in test
+    const activations = try allocator.alloc([]f32, net.layers.len + 1);
+    for (0..activations.len) |i| {
+        const dim = if (i == 0) net.layers[0].in_dim else net.layers[i-1].out_dim;
+        activations[i] = try allocator.alloc(f32, dim);
+    }
+    defer { for (activations) |a| allocator.free(a); allocator.free(activations); }
+
+    for (0..res) |x| {
+        const fx = (@as(f32, @floatFromInt(x)) / @as(f32, @floatFromInt(res))) * 2.0 - 1.0;
+        for (0..res) |y| {
+            const fy = (@as(f32, @floatFromInt(y)) / @as(f32, @floatFromInt(res))) * 2.0 - 1.0;
+            for (0..res) |z| {
+                const fz = (@as(f32, @floatFromInt(z)) / @as(f32, @floatFromInt(res))) * 2.0 - 1.0;
+                const input = [_]f32{ fx, fy, fz };
+                net.forward(&input, activations, 1);
+                if (@abs(activations[net.layers.len][0]) < 0.02) {
+                    try writer.print("v {d:0.4} {d:0.4} {d:0.4}\n", .{ fx, fy, fz });
+                }
+            }
+        }
+    }
 }

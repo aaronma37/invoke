@@ -57,7 +57,7 @@ pub fn derivative(i: usize, p: usize, x: f32, knots: []const f32) f32 {
 
 /// Structure of Arrays (SoA) Evaluation.
 pub fn evaluateEdges(
-    x: f32,
+    x_raw: f32,
     knots: []const f32,
     coeffs: []const f32,
     num_coeffs: usize,
@@ -67,16 +67,18 @@ pub fn evaluateEdges(
     @memset(results[0..num_edges], 0.0);
     
     const h = knots[1] - knots[0];
+    // Clamp x to ensure we always have 4 basis functions (k-3 to k)
+    // Safe range is [knots[3], knots[num_coeffs]]
+    const safe_min = knots[3];
+    const safe_max = knots[num_coeffs];
+    const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
+
     const i_float = (x - knots[0]) / h;
     const i = @as(isize, @intFromFloat(@floor(i_float)));
     
-    // Check bounds
     var k: isize = i - 3;
     while (k <= i) : (k += 1) {
         if (k < 0 or k >= @as(isize, @intCast(num_coeffs))) continue;
-        // Safety: Ensure k+1 is in bounds for basis calculation if needed, 
-        // but our analytical basis only uses knots[i] and knots[1]-knots[0].
-        // Wait, basis(i, ...) uses knots[i].
         if (@as(usize, @intCast(k)) >= knots.len) continue;
 
         const b_val = basis(@as(usize, @intCast(k)), 3, x, knots);
@@ -90,7 +92,7 @@ pub fn evaluateEdges(
 
 /// Vectorized SoA Evaluation (AVX-512)
 pub fn evaluateEdgesSimd(
-    x: f32,
+    x_raw: f32,
     knots: []const f32,
     coeffs: []const f32,
     num_coeffs: usize,
@@ -100,6 +102,10 @@ pub fn evaluateEdgesSimd(
     var sums = @as(Vector, @splat(0.0));
 
     const h = knots[1] - knots[0];
+    const safe_min = knots[3];
+    const safe_max = knots[num_coeffs];
+    const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
+
     const i_float = (x - knots[0]) / h;
     const i = @as(isize, @intFromFloat(@floor(i_float)));
 

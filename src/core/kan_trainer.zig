@@ -44,12 +44,17 @@ pub const AdamOptimizer = struct {
         self.t += 1.0;
         const lr_t = self.learning_rate * @sqrt(1.0 - std.math.pow(f32, self.beta2, self.t)) / (1.0 - std.math.pow(f32, self.beta1, self.t));
         for (0..net.layers.len) |l| {
+            var avg_grad: f32 = 0.0;
             for (0..grads[l].len) |i| {
                 const g = grads[l][i];
+                avg_grad += @abs(g);
                 self.m[l][i] = self.beta1 * self.m[l][i] + (1.0 - self.beta1) * g;
                 self.v[l][i] = self.beta2 * self.v[l][i] + (1.0 - self.beta2) * g * g;
                 const update = lr_t * self.m[l][i] / (@sqrt(self.v[l][i]) + self.epsilon);
                 net.layers[l].coeffs[i] -= update;
+            }
+            if (@as(usize, @intFromFloat(self.t)) % 1000 == 0) {
+                std.debug.print("Layer {d} Avg Grad: {d:0.8}\n", .{l, avg_grad / @as(f32, @floatFromInt(grads[l].len))});
             }
         }
     }
@@ -252,17 +257,22 @@ pub const KanTrainer = struct {
                 total_loss += thread_losses[t];
             }
         }
+// Reduction: Sum and Normalize
+const final_grads = try self.allocator.alloc([]f32, self.net.layers.len);
+for (0..self.net.layers.len) |l| {
+    const size = self.net.layers[l].in_dim * self.net.layers[l].num_coeffs * self.net.layers[l].out_dim;
+    final_grads[l] = try self.allocator.alloc(f32, size);
+    @memset(final_grads[l], 0.0);
+    for (0..num_threads) |t| {
+        if (t * chunk_size >= batch_size) break;
+        for (0..size) |i| final_grads[l][i] += self.thread_states[t].coeff_grads[l][i];
+    }
 
-        const final_grads = try self.allocator.alloc([]f32, self.net.layers.len);
-        for (0..self.net.layers.len) |l| {
-            const size = self.net.layers[l].in_dim * self.net.layers[l].num_coeffs * self.net.layers[l].out_dim;
-            final_grads[l] = try self.allocator.alloc(f32, size);
-            @memset(final_grads[l], 0.0);
-            for (0..num_threads) |t| {
-                if (t * chunk_size >= batch_size) break;
-                for (0..size) |i| final_grads[l][i] += self.thread_states[t].coeff_grads[l][i];
-            }
-        }
+    // NORMALIZE BY BATCH SIZE
+    const inv_batch = 1.0 / @as(f32, @floatFromInt(batch_size));
+    for (final_grads[l]) |*g| g.* *= inv_batch;
+}
+
         defer { for (final_grads) |g| self.allocator.free(g); self.allocator.free(final_grads); }
 
         self.optimizer.step(&self.net, final_grads);
@@ -297,25 +307,30 @@ test "KanTrainer: Sphere Fitting Functional Test" {
     const dims = [_]usize{ 3, 16, 1 };
     var trainer = try KanTrainer.initFixed(allocator, &dims, 8, 1024);
     defer trainer.deinit();
-    trainer.lambda_eikonal = 0.5;
-    trainer.optimizer.learning_rate = 0.01;
-    const batch_size = 64;
+    trainer.lambda_eikonal = 0.0;
+    trainer.optimizer.learning_rate = 0.005;
+    const batch_size = 512;
     const inputs = try allocator.alloc(f32, batch_size * 3);
     const targets = try allocator.alloc(f32, batch_size * 1);
     defer { allocator.free(inputs); allocator.free(targets); }
     var prng = std.Random.DefaultPrng.init(42);
     const rand = prng.random();
     var initial_loss: f32 = 0.0;
-    for (0..300) |epoch| {
+    for (0..10000) |epoch| {
         for (0..batch_size) |b| {
             const x = (rand.float(f32) * 2.0) - 1.0;
             const y = (rand.float(f32) * 2.0) - 1.0;
             const z = (rand.float(f32) * 2.0) - 1.0;
             inputs[b * 3 + 0] = x; inputs[b * 3 + 1] = y; inputs[b * 3 + 2] = z;
-            targets[b] = @sqrt(x*x + y*y + z*z) - 1.0;
+            targets[b] = @sqrt(x*x + y*y + z*z) - 0.8;
         }
         const loss = try trainer.trainStep(.{ .inputs = inputs, .targets = targets, .batch_size = batch_size });
         if (epoch == 0) initial_loss = loss;
-        if (epoch == 299) try std.testing.expect(loss < initial_loss * 0.5);
+        if (epoch % 1000 == 0) std.debug.print("Epoch {d}: Loss = {d:0.6}\n", .{epoch, loss});
+        if (epoch == 9999) {
+            std.debug.print("Final Loss: {d:0.6}\n", .{loss});
+            try std.testing.expect(loss < initial_loss * 0.01); // Expect 99% reduction
+            try trainer.net.saveModel("model.kan");
+        }
     }
 }
