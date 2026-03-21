@@ -55,8 +55,6 @@ pub const KanLayer = struct {
     }
 
     pub fn forward(self: KanLayer, inputs: []const f32, outputs: []f32, batch_size: usize) void {
-        @memset(outputs[0 .. batch_size * self.out_dim], 0.0);
-
         const h = self.knots[1] - self.knots[0];
         const inv_h = 1.0 / h;
         const safe_min = self.knots[3];
@@ -64,11 +62,15 @@ pub const KanLayer = struct {
 
         const vec_len = 16;
         const V = @Vector(vec_len, f32);
+        
+        // We accumulate up to 64 neurons in registers
+        const MAX_VECS = 4;
+        const num_vecs = (self.out_dim + vec_len - 1) / vec_len;
 
-        // AoS Point-Outer, Neuron-Inner -> Peak Performance
         for (0..batch_size) |b| {
-            const batch_out = outputs[b * self.out_dim .. (b + 1) * self.out_dim];
-            
+            var acc_regs: [MAX_VECS]V = undefined;
+            for (0..num_vecs) |v| acc_regs[v] = @as(V, @splat(0.0));
+
             for (0..self.in_dim) |i| {
                 const x_raw = inputs[b * self.in_dim + i];
                 const silu = x_raw / (1.0 + kan_spline.fast_exp(-x_raw));
@@ -82,10 +84,12 @@ pub const KanLayer = struct {
                 const k_base = @as(usize, @intCast(@max(0, span_idx - 3)));
                 const layer_coeffs_base = i * self.num_coeffs * self.out_dim_padded;
 
-                var j: usize = 0;
-                while (j + vec_len <= self.out_dim) : (j += vec_len) {
-                    var out_v: V = batch_out[j .. j + vec_len][0..vec_len].*;
-                    out_v += @as(V, @splat(silu));
+                const silu_v = @as(V, @splat(silu));
+                
+                var v: usize = 0;
+                while (v < num_vecs) : (v += 1) {
+                    const j = v * vec_len;
+                    var out_v = acc_regs[v] + silu_v;
 
                     for (0..4) |a| {
                         const k_u = k_base + a;
@@ -95,17 +99,20 @@ pub const KanLayer = struct {
                             out_v += @as(V, @splat(b_vals[a])) * weight_v;
                         }
                     }
-                    batch_out[j .. j + vec_len][0..vec_len].* = out_v;
+                    acc_regs[v] = out_v;
                 }
+            }
 
-                while (j < self.out_dim) : (j += 1) {
-                    batch_out[j] += silu;
-                    for (0..4) |a| {
-                        const k_u = k_base + a;
-                        if (k_u < self.num_coeffs) {
-                            batch_out[j] += b_vals[a] * self.coeffs[layer_coeffs_base + k_u * self.out_dim_padded + j];
-                        }
-                    }
+            // Write registers back to memory ONCE per point
+            const batch_out = outputs[b * self.out_dim .. (b + 1) * self.out_dim];
+            var j: usize = 0;
+            var v: usize = 0;
+            while (j + vec_len <= self.out_dim) : ({ j += vec_len; v += 1; }) {
+                batch_out[j .. j + vec_len][0..vec_len].* = acc_regs[v];
+            }
+            if (j < self.out_dim) {
+                for (j..self.out_dim) |rem_j| {
+                    batch_out[rem_j] = acc_regs[v][rem_j - j];
                 }
             }
         }
