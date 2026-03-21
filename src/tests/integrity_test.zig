@@ -229,4 +229,60 @@ test "Integrity: Bucket Sort Backward Parity" {
     for (0..opt_in_grad.len) |i| {
         try std.testing.expectApproxEqAbs(naive_in_grad[i], opt_in_grad[i], 1e-5);
     }
+    
+    std.debug.print("\nBackward Bucket Sort Parity Test - PASSED\n", .{});
+}
+
+test "Integrity: Serialization (Save/Load) Parity" {
+    const allocator = std.testing.allocator;
+    const dims = [_]usize{ 3, 16, 16, 6 };
+    const num_coeffs = 8;
+
+    // 1. Create original network and set random weights
+    var original_net = try @import("../core/kan_network.zig").KanNetwork.init(allocator, &dims, num_coeffs);
+    defer original_net.deinit();
+
+    var prng = std.Random.DefaultPrng.init(1234);
+    const rand = prng.random();
+    for (original_net.layers) |layer| {
+        for (layer.coeffs) |*c| c.* = rand.float(f32);
+    }
+
+    // 2. Run inference on original
+    const input = [_]f32{ 0.1, -0.5, 0.8 };
+    var orig_acts = try allocator.alloc([]f32, original_net.layers.len + 1);
+    for (0..original_net.layers.len) |i| orig_acts[i] = try allocator.alloc(f32, original_net.layers[i].in_dim);
+    orig_acts[original_net.layers.len] = try allocator.alloc(f32, original_net.out_dim);
+    defer { for (orig_acts) |a| allocator.free(a); allocator.free(orig_acts); }
+
+    original_net.forward(&input, orig_acts, 1);
+    
+    // Copy result to compare later
+    const expected_out = try allocator.alloc(f32, original_net.out_dim);
+    defer allocator.free(expected_out);
+    @memcpy(expected_out, orig_acts[original_net.layers.len]);
+
+    // 3. Save to disk
+    const tmp_path = "test_model_serialization.kan";
+    try original_net.saveModel(tmp_path);
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    // 4. Load from disk
+    var loaded_net = try @import("../core/kan_network.zig").KanNetwork.loadModel(allocator, tmp_path);
+    defer loaded_net.deinit();
+
+    // 5. Run inference on loaded
+    var load_acts = try allocator.alloc([]f32, loaded_net.layers.len + 1);
+    for (0..loaded_net.layers.len) |i| load_acts[i] = try allocator.alloc(f32, loaded_net.layers[i].in_dim);
+    load_acts[loaded_net.layers.len] = try allocator.alloc(f32, loaded_net.out_dim);
+    defer { for (load_acts) |a| allocator.free(a); allocator.free(load_acts); }
+
+    loaded_net.forward(&input, load_acts, 1);
+
+    // 6. Assert results are bit-identical
+    for (0..original_net.out_dim) |i| {
+        try std.testing.expectEqual(expected_out[i], load_acts[loaded_net.layers.len][i]);
+    }
+
+    std.debug.print("\nSerialization Integrity Test - PASSED (Original vs Loaded output matches exactly)\n", .{});
 }
