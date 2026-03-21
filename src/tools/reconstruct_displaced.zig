@@ -105,7 +105,7 @@ pub fn main() !void {
         for (0..current_batch_faces) |i| {
             const face = faces.items[f_idx + i];
             for (0..3) |j| {
-                const uv = if (uvs.items.len > face.vt_idx[j]) uvs.items[face.vt_idx[j]] else .{ .u = 0, .v = 0 };
+                const uv = if (uvs.items.len > face.vt_idx[j]) uvs.items[face.vt_idx[j]] else Vec2{ .u = 0, .v = 0 };
                 activations[0][(i * 3 + j) * 2 + 0] = uv.u;
                 activations[0][(i * 3 + j) * 2 + 1] = uv.v;
             }

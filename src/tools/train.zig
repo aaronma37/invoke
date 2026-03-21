@@ -43,7 +43,7 @@ pub fn main() !void {
     const num_coeffs = 16;
     
     // Resume if model exists, otherwise init fresh
-    var trainer: KanTrainer = undefined;
+    var trainer: *KanTrainer = undefined;
     const model_path = if (task == .sdf) "model_sdf.kan" else "model_disp.kan";
     const model_exists = if (std.fs.cwd().access(model_path, .{})) |_| true else |_| false;
     

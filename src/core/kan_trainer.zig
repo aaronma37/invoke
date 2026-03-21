@@ -358,10 +358,19 @@ pub const KanTrainer = struct {
             while (i + vec_len <= size) : (i += vec_len) {
                 const v_grad: V = ccd0_acc[i..i+vec_len][0..vec_len].*;
                 const v_coeffs: V = target_coeffs[i..i+vec_len][0..vec_len].*;
-                ccd0_acc[i..i+vec_len][0..vec_len].* = (v_grad * v_inv) + (v_coeffs * v_l2);
+                const v_final = (v_grad * v_inv) + (v_coeffs * v_l2);
+                
+                // Detect NaNs or extreme values
+                if (@reduce(.Or, @abs(v_final) > @as(V, @splat(1e10)))) {
+                    return error.ModelDiverged;
+                }
+                
+                ccd0_acc[i..i+vec_len][0..vec_len].* = v_final;
             }
             while (i < size) : (i += 1) {
-                ccd0_acc[i] = (ccd0_acc[i] * inv_batch) + (target_coeffs[i] * self.lambda_l2);
+                const g = (ccd0_acc[i] * inv_batch) + (target_coeffs[i] * self.lambda_l2);
+                if (!std.math.isFinite(g) or @abs(g) > 1e10) return error.ModelDiverged;
+                ccd0_acc[i] = g;
             }
         }
 

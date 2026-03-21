@@ -16,7 +16,7 @@ pub fn main() !void {
     const batch_size = 10000;
     
     std.debug.print("Initializing KAN Benchmark: 3 -> 32 -> 32 -> 1 (coeffs: {d})\n", .{num_coeffs});
-    var trainer = try KanTrainer.initFixed(allocator, &dims, num_coeffs, batch_size);
+    var trainer = try KanTrainer.initFixed(allocator, &dims, num_coeffs, batch_size, .sdf);
     defer trainer.deinit();
 
     const inputs = try allocator.alloc(f32, batch_size * 3);

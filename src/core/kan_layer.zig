@@ -78,7 +78,7 @@ pub const KanLayer = struct {
                 const x_raw = inputs[b * self.in_dim + i];
                 silu_buf[i] = x_raw / (1.0 + kan_spline.fast_exp(-x_raw));
 
-                const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
+                const x = std.math.clamp(x_raw, safe_min + 1e-6, safe_max - 1e-6);
                 const span_float = (x - self.knots[0]) * inv_h;
                 const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
                 const u = span_float - @as(f32, @floatFromInt(span_idx));
@@ -160,7 +160,7 @@ pub const KanLayer = struct {
                 silu_buf[i] = x_raw * sigmoid;
                 silup_buf[i] = sigmoid * (1.0 + x_raw * (1.0 - sigmoid));
 
-                const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
+                const x = std.math.clamp(x_raw, safe_min + 1e-6, safe_max - 1e-6);
                 const span_float = (x - self.knots[0]) * inv_h;
                 const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
                 const u = span_float - @as(f32, @floatFromInt(span_idx));
@@ -264,7 +264,7 @@ pub const KanLayer = struct {
                     const sigmoid = 1.0 / (1.0 + kan_spline.fast_exp(-x_raw));
                     silup_block[idx] = sigmoid * (1.0 + x_raw * (1.0 - sigmoid));
 
-                    const x = std.math.clamp(x_raw, safe_min, safe_max - 1e-5);
+                    const x = std.math.clamp(x_raw, safe_min + 1e-6, safe_max - 1e-6);
                     const span_float = (x - self.knots[0]) * inv_h;
                     const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
                     const u = span_float - @as(f32, @floatFromInt(span_idx));

@@ -213,6 +213,28 @@ pub fn build(b: *std.Build) void {
     const obj_step = b.step("reconstruct-kan", "Extract model.kan to bunny_reconstructed.obj");
     obj_step.dependOn(&obj_run.step);
 
+    // KAN UV SAMPLER TOOL
+    const uv_exe = b.addExecutable(.{
+        .name = "uv-sampler",
+        .root_source_file = b.path("src/tools/uv_sampler.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
+        .optimize = optimize,
+    });
+    uv_exe.linkLibC();
+    uv_exe.root_module.addImport("kan", kan_mod);
+    b.installArtifact(uv_exe);
+
+    // KAN DISPLACED RECONSTRUCTION TOOL
+    const dis_exe = b.addExecutable(.{
+        .name = "reconstruct-displaced",
+        .root_source_file = b.path("src/tools/reconstruct_displaced.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
+        .optimize = optimize,
+    });
+    dis_exe.linkLibC();
+    dis_exe.root_module.addImport("kan", kan_mod);
+    b.installArtifact(dis_exe);
+
     // 7. RUN COMMAND
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

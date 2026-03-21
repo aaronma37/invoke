@@ -286,3 +286,28 @@ test "Integrity: Serialization (Save/Load) Parity" {
 
     std.debug.print("\nSerialization Integrity Test - PASSED (Original vs Loaded output matches exactly)\n", .{});
 }
+
+test "Integrity: Memory Leakage Check" {
+    // std.testing.allocator automatically checks for leaks on deinit!
+    const allocator = std.testing.allocator;
+    const dims = [_]usize{ 3, 16, 16, 1 };
+    const num_coeffs = 8;
+    const batch_size = 1024;
+
+    // Allocate fixed data
+    const inputs = try allocator.alloc(f32, batch_size * 3);
+    const targets = try allocator.alloc(f32, batch_size * 1);
+    defer { allocator.free(inputs); allocator.free(targets); }
+    @memset(inputs, 0.1);
+    @memset(targets, 0.5);
+
+    // Full Init/Train/Deinit cycle
+    var trainer = try kan_trainer.KanTrainer.initWithThreads(allocator, &dims, num_coeffs, batch_size, .sdf, 4);
+    
+    const batch = kan_trainer.TrainingBatch{ .inputs = inputs, .targets = targets, .batch_size = batch_size };
+    _ = try trainer.trainStep(batch);
+    
+    trainer.deinit();
+    
+    std.debug.print("\nMemory Leak Integrity Test - PASSED (Zero bytes leaked)\n", .{});
+}
