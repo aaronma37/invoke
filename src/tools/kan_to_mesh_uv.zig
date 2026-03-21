@@ -40,10 +40,8 @@ pub fn main() !void {
     defer net.deinit();
 
     // 2. Load Base OBJ
-    const file = try std.fs.cwd().openFile(base_path, .{});
-    defer file.close();
-    var reader = std.io.bufferedReader(file.reader());
-    var in_stream = reader.reader();
+    const file_content = try std.fs.cwd().readFileAlloc(allocator, base_path, 100 * 1024 * 1024);
+    defer allocator.free(file_content);
 
     var vertices = std.ArrayList(Vec3).init(allocator);
     defer vertices.deinit();
@@ -52,29 +50,29 @@ pub fn main() !void {
     var faces = std.ArrayList(Face).init(allocator);
     defer faces.deinit();
 
-    var buf: [1024]u8 = undefined;
-    while (try in_stream.readUntilDelimiterOrEof(&buf, '\n')) |line| {
-        var it = std.mem.tokenizeAny(u8, line, " ");
-        const first = it.next() orelse continue;
-        if (std.mem.eql(u8, first, "v")) {
+    var it = std.mem.tokenizeAny(u8, file_content, " \r\n");
+    while (it.next()) |token| {
+        if (std.mem.eql(u8, token, "v")) {
             const x = try std.fmt.parseFloat(f32, it.next().?);
             const y = try std.fmt.parseFloat(f32, it.next().?);
             const z = try std.fmt.parseFloat(f32, it.next().?);
             try vertices.append(.{ .x = x, .y = y, .z = z });
-        } else if (std.mem.eql(u8, first, "vt")) {
+        } else if (std.mem.eql(u8, token, "vt")) {
             const u = try std.fmt.parseFloat(f32, it.next().?);
             const v = try std.fmt.parseFloat(f32, it.next().?);
             try uvs.append(.{ .u = u, .v = v });
-        } else if (std.mem.eql(u8, first, "f")) {
+        } else if (std.mem.eql(u8, token, "f")) {
             var f: Face = undefined;
             for (0..3) |i| {
                 const part = it.next().?;
                 var sit = std.mem.tokenizeAny(u8, part, "/");
                 f.v_idx[i] = (try std.fmt.parseInt(usize, sit.next().?, 10)) - 1;
                 if (sit.next()) |uv_str| {
-                    f.vt_idx[i] = (try std.fmt.parseInt(usize, uv_str, 10)) - 1;
+                    if (uv_str.len > 0) {
+                        f.vt_idx[i] = (try std.fmt.parseInt(usize, uv_str, 10)) - 1;
+                    } else { f.vt_idx[i] = 0; }
                 } else {
-                    f.vt_idx[i] = 0; // Fallback
+                    f.vt_idx[i] = 0;
                 }
             }
             try faces.append(f);

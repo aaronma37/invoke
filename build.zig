@@ -150,7 +150,7 @@ pub fn build(b: *std.Build) void {
     // 6. KAN TRAINER TOOL
     const train_exe = b.addExecutable(.{
         .name = "kan-train",
-        .root_source_file = b.path("src/tools/train.zig"),
+        .root_source_file = b.path("src/tools/kan_train.zig"),
         .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
         .optimize = optimize,
     });
@@ -159,12 +159,6 @@ pub fn build(b: *std.Build) void {
     train_exe.addIncludePath(b.path("sdk"));
     train_exe.root_module.addImport("kan", kan_mod);
     b.installArtifact(train_exe);
-
-    const train_run = b.addRunArtifact(train_exe);
-    train_run.step.dependOn(b.getInstallStep());
-    if (b.args) |args| train_run.addArgs(args);
-    const train_step = b.step("train", "Run the KAN trainer");
-    train_step.dependOn(&train_run.step);
 
     // KAN BENCHMARK TOOL
     const bench_exe = b.addExecutable(.{
@@ -179,10 +173,6 @@ pub fn build(b: *std.Build) void {
     bench_exe.root_module.addImport("kan", kan_mod);
     b.installArtifact(bench_exe);
 
-    const bench_run = b.addRunArtifact(bench_exe);
-    const bench_step = b.step("bench", "Run the KAN benchmark");
-    bench_step.dependOn(&bench_run.step);
-
     // KAN TO PCB TOOL (Validation)
     const pcb_exe = b.addExecutable(.{
         .name = "kan-to-pcb",
@@ -191,47 +181,60 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     pcb_exe.linkLibC();
+    pcb_exe.addIncludePath(b.path("src/core"));
+    pcb_exe.addIncludePath(b.path("sdk"));
     pcb_exe.root_module.addImport("kan", kan_mod);
     b.installArtifact(pcb_exe);
 
-    const pcb_run = b.addRunArtifact(pcb_exe);
-    const pcb_step = b.step("debug-kan", "Sample model.kan to kan_debug.pcb");
-    pcb_step.dependOn(&pcb_run.step);
-
-    // KAN TO OBJ TOOL (Reconstruction)
-    const obj_exe = b.addExecutable(.{
-        .name = "kan-to-obj",
-        .root_source_file = b.path("src/tools/reconstruct.zig"),
+    // KAN TO MESH (SDF)
+    const sdf_exe = b.addExecutable(.{
+        .name = "kan-to-mesh-sdf",
+        .root_source_file = b.path("src/tools/kan_to_mesh_sdf.zig"),
         .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
         .optimize = optimize,
     });
-    obj_exe.linkLibC();
-    obj_exe.root_module.addImport("kan", kan_mod);
-    b.installArtifact(obj_exe);
+    sdf_exe.linkLibC();
+    sdf_exe.addIncludePath(b.path("src/core"));
+    sdf_exe.addIncludePath(b.path("sdk"));
+    sdf_exe.root_module.addImport("kan", kan_mod);
+    b.installArtifact(sdf_exe);
 
-    const obj_run = b.addRunArtifact(obj_exe);
-    const obj_step = b.step("reconstruct-kan", "Extract model.kan to bunny_reconstructed.obj");
-    obj_step.dependOn(&obj_run.step);
+    // CHECK DATA
+    const check_exe = b.addExecutable(.{
+        .name = "check-data",
+        .root_source_file = b.path("src/tools/check_data.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
+        .optimize = optimize,
+    });
+    check_exe.linkLibC();
+    check_exe.addIncludePath(b.path("src/core"));
+    check_exe.addIncludePath(b.path("sdk"));
+    check_exe.root_module.addImport("kan", kan_mod);
+    b.installArtifact(check_exe);
 
     // KAN UV SAMPLER TOOL
     const uv_exe = b.addExecutable(.{
         .name = "uv-sampler",
-        .root_source_file = b.path("src/tools/uv_sampler.zig"),
+        .root_source_file = b.path("src/tools/sampler_uv.zig"),
         .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
         .optimize = optimize,
     });
     uv_exe.linkLibC();
+    uv_exe.addIncludePath(b.path("src/core"));
+    uv_exe.addIncludePath(b.path("sdk"));
     uv_exe.root_module.addImport("kan", kan_mod);
     b.installArtifact(uv_exe);
 
     // KAN DISPLACED RECONSTRUCTION TOOL
     const dis_exe = b.addExecutable(.{
         .name = "reconstruct-displaced",
-        .root_source_file = b.path("src/tools/reconstruct_displaced.zig"),
+        .root_source_file = b.path("src/tools/kan_to_mesh_uv.zig"),
         .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
         .optimize = optimize,
     });
     dis_exe.linkLibC();
+    dis_exe.addIncludePath(b.path("src/core"));
+    dis_exe.addIncludePath(b.path("sdk"));
     dis_exe.root_module.addImport("kan", kan_mod);
     b.installArtifact(dis_exe);
 

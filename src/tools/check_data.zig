@@ -7,7 +7,11 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const file = try std.fs.cwd().openFile("current_dataset.pcb", .{});
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+    const path = if (args.len > 1) args[1] else "current_dataset.pcb";
+
+    const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
     const stat = try file.stat();
     

@@ -68,39 +68,44 @@ fn loadObj(allocator: mem.Allocator, path: []const u8) !Mesh {
         .faces = std.ArrayList(Face).init(allocator),
     };
 
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    var reader = std.io.bufferedReader(file.reader());
-    var in_stream = reader.reader();
+    const file_content = try std.fs.cwd().readFileAlloc(allocator, path, 100 * 1024 * 1024);
+    defer allocator.free(file_content);
 
-    var buf: [65536]u8 = undefined;
-    while (try in_stream.readUntilDelimiterOrEof(&buf, '\n')) |line| {
-        var it = std.mem.tokenizeAny(u8, line, " \r");
-        const first = it.next() orelse continue;
-        if (std.mem.eql(u8, first, "v")) {
-            const x = try std.fmt.parseFloat(f32, it.next().?);
-            const y = try std.fmt.parseFloat(f32, it.next().?);
-            const z = try std.fmt.parseFloat(f32, it.next().?);
+    var it = std.mem.tokenizeAny(u8, file_content, " \r\n\\n");
+    while (it.next()) |token| {
+        if (std.mem.eql(u8, token, "v")) {
+            const x_str = it.next() orelse break;
+            const y_str = it.next() orelse break;
+            const z_str = it.next() orelse break;
+            const x = std.fmt.parseFloat(f32, x_str) catch |err| { std.debug.print("Error parsing v x: {s}\n", .{x_str}); return err; };
+            const y = std.fmt.parseFloat(f32, y_str) catch |err| { std.debug.print("Error parsing v y: {s}\n", .{y_str}); return err; };
+            const z = std.fmt.parseFloat(f32, z_str) catch |err| { std.debug.print("Error parsing v z: {s}\n", .{z_str}); return err; };
             try mesh.vertices.append(.{ .x = x, .y = y, .z = z });
-        } else if (std.mem.eql(u8, first, "vt")) {
-            const u = try std.fmt.parseFloat(f32, it.next().?);
-            const v = try std.fmt.parseFloat(f32, it.next().?);
+        } else if (std.mem.eql(u8, token, "vt")) {
+            const u_str = it.next() orelse break;
+            const v_str = it.next() orelse break;
+            const u = std.fmt.parseFloat(f32, u_str) catch |err| { std.debug.print("Error parsing vt u: {s}\n", .{u_str}); return err; };
+            const v = std.fmt.parseFloat(f32, v_str) catch |err| { std.debug.print("Error parsing vt v: {s}\n", .{v_str}); return err; };
             try mesh.uvs.append(.{ .u = u, .v = v });
-        } else if (std.mem.eql(u8, first, "f")) {
+        } else if (std.mem.eql(u8, token, "f")) {
             var f: Face = undefined;
             for (0..3) |i| {
-                const part = it.next().?;
+                const part = it.next() orelse break;
                 var sit = std.mem.tokenizeAny(u8, part, "/");
-                f.v_idx[i] = (try std.fmt.parseInt(usize, sit.next().?, 10)) - 1;
+                const v_idx_str = sit.next() orelse break;
+                f.v_idx[i] = (std.fmt.parseInt(usize, v_idx_str, 10) catch |err| { std.debug.print("Error parsing f v: {s}\n", .{v_idx_str}); return err; }) - 1;
                 if (sit.next()) |uv_str| {
                     if (uv_str.len > 0) {
-                        f.vt_idx[i] = (try std.fmt.parseInt(usize, uv_str, 10)) - 1;
+                        f.vt_idx[i] = (std.fmt.parseInt(usize, uv_str, 10) catch 1) - 1;
                     } else { f.vt_idx[i] = 0; }
                 } else {
                     f.vt_idx[i] = 0;
                 }
             }
             try mesh.faces.append(f);
+        } else {
+            // Skip unknown tokens (g, s, mtllib, usemtl, etc)
+            continue;
         }
     }
     return mesh;
@@ -151,23 +156,51 @@ pub fn main() !void {
         
         // Sample explicitly at every face vertex of the base mesh
         for (base_mesh.faces.items) |f| {
-            // Note: For a smoother map, we should rasterize the triangles in UV space,
-            // but sampling exactly at the vertices is the minimal viable distillation.
             for (0..3) |i| {
                 const v_id = f.v_idx[i];
                 const vt_id = f.vt_idx[i];
                 const orig = base_mesh.vertices.items[v_id];
-                const dir = orig.normalize(); // Simple spherical normal for base displacement
+                const dir = orig.normalize(); 
                 const uv = if (base_mesh.uvs.items.len > vt_id) base_mesh.uvs.items[vt_id] else Vec2{ .u = 0, .v = 0 };
                 
                 var min_t: f32 = 10.0;
                 var hit = false;
-                for (target_mesh.faces.items) |tf| {
-                    if (rayTriangleIntersect(orig, dir, target_mesh.vertices.items[tf.v_idx[0]], target_mesh.vertices.items[tf.v_idx[1]], target_mesh.vertices.items[tf.v_idx[2]])) |t| {
-                        if (t < min_t) {
-                            min_t = t;
-                            hit = true;
+
+                if (target_mesh.faces.items.len > 0) {
+                    for (target_mesh.faces.items) |tf| {
+                        if (rayTriangleIntersect(orig, dir, target_mesh.vertices.items[tf.v_idx[0]], target_mesh.vertices.items[tf.v_idx[1]], target_mesh.vertices.items[tf.v_idx[2]])) |t| {
+                            if (t < min_t) {
+                                min_t = t;
+                                hit = true;
+                            }
                         }
+                    }
+                } else {
+                    // FALLBACK: Nearest Vertex Distance (Point Cloud)
+                    // We look for the vertex closest to the ray path
+                    var min_dist_sq: f32 = 1e10;
+                    for (target_mesh.vertices.items) |tv| {
+                        const to_v = tv.sub(orig);
+                        const proj = to_v.dot(dir);
+                        if (proj < 0) continue; // Behind ray
+                        
+                        const perp = to_v.sub(dir.mul(proj));
+                        const d2 = perp.dot(perp);
+                        if (d2 < 0.001) { // Very close to ray
+                            if (proj < min_t) {
+                                min_t = proj;
+                                hit = true;
+                            }
+                        }
+                        
+                        // Also track raw distance for debugging
+                        const d_raw_sq = to_v.dot(to_v);
+                        if (d_raw_sq < min_dist_sq) min_dist_sq = d_raw_sq;
+                    }
+                    // If no ray hit, use nearest vertex as approximation
+                    if (!hit) {
+                        min_t = @sqrt(min_dist_sq);
+                        hit = true;
                     }
                 }
                 
