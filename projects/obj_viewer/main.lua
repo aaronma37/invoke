@@ -17,7 +17,8 @@ local function clamp(x, lo, hi) return x < lo and lo or (x > hi and hi or x) end
 local M = { 
     cam_dist = 3.0,
     cam_yaw = 0,
-    cam_pitch = 0.5
+    cam_pitch = 0.5,
+    target = {0, 0.8, 0} -- Default for human height
 }
 
 local device, queue, sw, pipe_layout, graphics_pipe
@@ -40,6 +41,20 @@ function M.init()
     local data, count = loader.load(obj_path)
     vertex_count = count
     vertex_buffer = mc.buffer(ffi.sizeof(data), "vertex", data)
+
+    -- Auto-center
+    local min_x, min_y, min_z = 1e10, 1e10, 1e10
+    local max_x, max_y, max_z = -1e10, -1e10, -1e10
+    for i=0, count-1 do
+        local x, y, z = data[i*9], data[i*9+1], data[i*9+2]
+        min_x = math.min(min_x, x); max_x = math.max(max_x, x)
+        min_y = math.min(min_y, y); max_y = math.max(max_y, y)
+        min_z = math.min(min_z, z); max_z = math.max(max_z, z)
+    end
+    M.target = {(min_x + max_x) * 0.5, (min_y + max_y) * 0.5, (min_z + max_z) * 0.5}
+    local dx, dy, dz = max_x - min_x, max_y - min_y, max_z - min_z
+    M.cam_dist = math.sqrt(dx*dx + dy*dy + dz*dz) * 1.5
+    print(string.format("Auto-centered: (%.2f, %.2f, %.2f) Dist: %.2f", M.target[1], M.target[2], M.target[3], M.cam_dist))
 
     -- 2. Depth Buffer
     local depth_format = image.find_depth_format(physical_device)
@@ -105,11 +120,11 @@ function M.update()
     if input.key_down(input.SCANCODE_W) then M.cam_dist = math.max(M.cam_dist - 0.1, 0.1) end
     if input.key_down(input.SCANCODE_S) then M.cam_dist = M.cam_dist + 0.1 end
 
-    local cam_x = M.cam_dist * math.cos(M.cam_pitch) * math.sin(M.cam_yaw)
-    local cam_y = M.cam_dist * math.sin(M.cam_pitch)
-    local cam_z = M.cam_dist * math.cos(M.cam_pitch) * math.cos(M.cam_yaw)
+    local cam_x = M.target[1] + M.cam_dist * math.cos(M.cam_pitch) * math.sin(M.cam_yaw)
+    local cam_y = M.target[2] + M.cam_dist * math.sin(M.cam_pitch)
+    local cam_z = M.target[3] + M.cam_dist * math.cos(M.cam_pitch) * math.cos(M.cam_yaw)
     
-    local view = mc.mat4_look_at({cam_x, cam_y, cam_z}, {0, 0, 0}, {0, 1, 0})
+    local view = mc.mat4_look_at({cam_x, cam_y, cam_z}, {M.target[1], M.target[2], M.target[3]}, {0, 1, 0})
     local proj = mc.mat4_perspective(mc.rad(60), sw.extent.width/sw.extent.height, 0.01, 100.0)
     proj.m[5] = -proj.m[5]
     local mvp = mc.mat4_multiply(proj, view)

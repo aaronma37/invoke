@@ -1,4 +1,5 @@
 const std = @import("std");
+const mem = std.mem;
 const kan = @import("kan");
 
 const KanNetwork = kan.KanNetwork;
@@ -27,12 +28,21 @@ pub fn main() !void {
     var task: kan.kan_trainer.TaskType = .sdf;
     var use_eikonal = true;
     var custom_model_path: ?[]const u8 = null;
+    var multi_mode = false;
+    var latents_path: ?[]const u8 = null;
 
     var arg_i: usize = 0;
     while (arg_i < args.len) : (arg_i += 1) {
         const arg = args[arg_i];
         if (std.mem.eql(u8, arg, "--no-eikonal")) use_eikonal = false;
         if (std.mem.eql(u8, arg, "displacement")) task = .displacement;
+        if (std.mem.eql(u8, arg, "--multi")) {
+            multi_mode = true;
+            if (arg_i + 1 < args.len) {
+                arg_i += 1;
+                latents_path = args[arg_i];
+            }
+        }
         if (std.mem.eql(u8, arg, "--output")) {
             if (arg_i + 1 < args.len) {
                 arg_i += 1;
@@ -45,13 +55,35 @@ pub fn main() !void {
 
     std.debug.print("Task: {s}\n", .{@tagName(task)});
     std.debug.print("Model Path: {s}\n", .{model_path});
-    std.debug.print("Loading dataset: {s}...\n", .{pcb_path});
-    var loader = try DataLoader.init(allocator, pcb_path);
-    defer loader.deinit();
 
-    const dims_sdf = [_]usize{ 3, 32, 32, 1 };
-    const dims_disp = [_]usize{ 2, 64, 3 };
-    const dims: []const usize = if (task == .sdf) &dims_sdf else &dims_disp;
+    if (multi_mode) {
+        if (latents_path == null) {
+            std.debug.print("Error: --multi requires path to latents.json\n", .{});
+            return;
+        }
+        std.debug.print("Multi-Model Mode: Loading from {s} with latents {s}\n", .{pcb_path, latents_path.?});
+        var loader = try kan.kan_dataloader.MultiDataLoader.init(allocator, pcb_path, latents_path.?);
+        defer loader.deinit();
+
+        const latent_dim = loader.models[0].label.len;
+        const total_in = 2 + latent_dim;
+        const dims = [_]usize{ total_in, 64, 64, 3 };
+        
+        try runTraining(allocator, loader, &dims, epochs, batch_size, lr, model_path, task);
+    } else {
+        std.debug.print("Loading dataset: {s}...\n", .{pcb_path});
+        var loader = try DataLoader.init(allocator, pcb_path);
+        defer loader.deinit();
+
+        const dims_sdf = [_]usize{ 3, 32, 32, 1 };
+        const dims_disp = [_]usize{ 2, 64, 3 };
+        const dims: []const usize = if (task == .sdf) &dims_sdf else &dims_disp;
+        
+        try runTraining(allocator, loader, dims, epochs, batch_size, lr, model_path, task);
+    }
+}
+
+fn runTraining(allocator: mem.Allocator, loader: anytype, dims: []const usize, epochs: usize, batch_size: usize, lr: f32, model_path: []const u8, task: kan.kan_trainer.TaskType) !void {
     const num_coeffs = 8;
     
     // Resume if model exists, otherwise init fresh

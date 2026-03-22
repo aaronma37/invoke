@@ -48,9 +48,20 @@ def pcb_to_obj(pcb_path, base_obj_path, output_obj):
                 py = pos[1] + norm[1] * sdf
                 pz = pos[2] + norm[2] * sdf
                 
-                out.write(f"v {px:.6f} {py:.6f} {pz:.6f}\n")
+                # Write v x y z r g b
+                out.write(f"v {px:.6f} {py:.6f} {pz:.6f} 0.5 0.5 0.5\n")
+                # Write vn
+                out.write(f"vn {norm[0]:.4f} {norm[1]:.4f} {norm[2]:.4f}\n")
                 idx += 1
             if idx >= num_samples: break
+            
+        # Write faces (v/vt/vn style though we skip vt for now)
+        v_offset = 1
+        for f in faces:
+            if v_offset + 2 > idx: break
+            # f v//vn
+            out.write(f"f {v_offset}//{v_offset} {v_offset+1}//{v_offset+1} {v_offset+2}//{v_offset+2}\n")
+            v_offset += 3
 
     print(f"Exported {idx} points to {output_obj}")
 

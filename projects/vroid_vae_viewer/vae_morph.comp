@@ -1,0 +1,123 @@
+#version 450
+layout(local_size_x = 256) in;
+
+struct Vertex {
+    vec3 pos;
+    vec3 normal;
+    vec3 color;
+};
+
+struct Sample {
+    float u, v, z_zero;
+    float sdf;
+    float r, g, b;
+    float roughness, metallic;
+};
+
+layout(set = 0, binding = 0) buffer BaseVertices { Vertex base_verts[]; };
+layout(set = 0, binding = 1) buffer BaseUVs { Sample base_uvs[]; };
+layout(set = 0, binding = 2) buffer MorphVertices { Vertex morph_verts[]; };
+layout(set = 0, binding = 3) buffer KanWeights { float coeffs[]; };
+
+layout(push_constant) uniform PushConstants {
+    float latents[16];
+    uint vertex_count;
+    uint layer1_offset;
+    uint layer2_offset;
+    uint layer1_out_padded;
+    uint layer2_out_padded;
+    float kmin1;
+    float kmax1;
+    float kmin2;
+    float kmax2;
+} pc;
+
+vec4 kan_basis_all(float u) {
+    float s2 = u * u;
+    float s3 = s2 * u;
+    float inv6 = 1.0 / 6.0;
+    return vec4(
+        inv6 * (1.0 - 3.0*u + 3.0*s2 - s3),
+        inv6 * (4.0 - 6.0*s2 + 3.0*s3),
+        inv6 * (1.0 + 3.0*u + 3.0*s2 - 3.0*s3),
+        inv6 * s3
+    );
+}
+
+float silu(float x) {
+    return x / (1.0 + exp(-x));
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.vertex_count) return;
+
+    // 1. Inputs (18 dims)
+    float x[18];
+    x[0] = base_uvs[idx].u;
+    x[1] = base_uvs[idx].v;
+    for(int i=0; i<16; i++) x[i+2] = pc.latents[i];
+
+    // 2. Layer 1 (18 -> 64)
+    float h1[64];
+    float h_l1 = (pc.kmax1 - pc.kmin1) / 5.0; // 8 coeffs -> 5 intervals
+    for(int j=0; j<64; j++) {
+        float base_sum = 0.0;
+        float spline_sum = 0.0;
+        for(int i=0; i<18; i++) {
+            float val = x[i];
+            base_sum += silu(val) / 18.0;
+            
+            float x_clamp = clamp(val, pc.kmin1 + 1e-6, pc.kmax1 - 1e-6);
+            float span_float = (x_clamp - pc.kmin1) / h_l1 + 3.0;
+            int span_idx = int(floor(span_float));
+            float u = span_float - float(span_idx);
+            
+            vec4 b = kan_basis_all(u);
+            int k_base = int(max(0, span_idx - 3));
+            
+            uint layer_coeffs_base = i * 8 * pc.layer1_out_padded;
+            for(int k=0; k<4; k++) {
+                int coeff_idx = k_base + k;
+                if(coeff_idx < 8) {
+                    spline_sum += b[k] * coeffs[pc.layer1_offset + layer_coeffs_base + coeff_idx * pc.layer1_out_padded + j];
+                }
+            }
+        }
+        h1[j] = base_sum + spline_sum;
+    }
+
+    // 3. Layer 2 (64 -> 3)
+    float d[3];
+    float h_l2 = (pc.kmax2 - pc.kmin2) / 5.0;
+    for(int j=0; j<3; j++) {
+        float base_sum = 0.0;
+        float spline_sum = 0.0;
+        for(int i=0; i<64; i++) {
+            float val = h1[i];
+            base_sum += silu(val) / 64.0;
+            
+            float x_clamp = clamp(val, pc.kmin2 + 1e-6, pc.kmax2 - 1e-6);
+            float span_float = (x_clamp - pc.kmin2) / h_l2 + 3.0;
+            int span_idx = int(floor(span_float));
+            float u = span_float - float(span_idx);
+            
+            vec4 b = kan_basis_all(u);
+            int k_base = int(max(0, span_idx - 3));
+            
+            uint layer_coeffs_base = i * 8 * pc.layer2_out_padded;
+            for(int k=0; k<4; k++) {
+                int coeff_idx = k_base + k;
+                if(coeff_idx < 8) {
+                    spline_sum += b[k] * coeffs[pc.layer2_offset + layer_coeffs_base + coeff_idx * pc.layer2_out_padded + j];
+                }
+            }
+        }
+        d[j] = base_sum + spline_sum;
+    }
+
+    // 4. Apply Displacement
+    morph_verts[idx].pos = base_verts[idx].pos + vec3(d[0], d[1], d[2]);
+    morph_verts[idx].normal = base_verts[idx].normal;
+    morph_verts[idx].color = base_verts[idx].color;
+}

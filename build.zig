@@ -238,6 +238,19 @@ pub fn build(b: *std.Build) void {
     dis_exe.root_module.addImport("kan", kan_mod);
     b.installArtifact(dis_exe);
 
+    // VAE-KAN RECONSTRUCTION TOOL
+    const vae_re_exe = b.addExecutable(.{
+        .name = "reconstruct-vae",
+        .root_source_file = b.path("src/tools/kan_vae_reconstruct.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
+        .optimize = optimize,
+    });
+    vae_re_exe.linkLibC();
+    vae_re_exe.addIncludePath(b.path("src/core"));
+    vae_re_exe.addIncludePath(b.path("sdk"));
+    vae_re_exe.root_module.addImport("kan", kan_mod);
+    b.installArtifact(vae_re_exe);
+
     // 7. RUN COMMAND
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

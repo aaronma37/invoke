@@ -54,7 +54,7 @@ void main() {
     vec3 dir = queries[idx].direction.xyz;
     
     // Shoot both ways to find closest surface
-    float offset = 0.5; // Large enough for Stanford Bunny scale
+    float offset = 0.1; // Reduced from 0.5 to prevent hitting distant body parts
     vec3 orig_back = base_pos - dir * offset;
     
     float min_abs_t = 1e20;
@@ -64,9 +64,12 @@ void main() {
         float t = rayTriangleIntersect(orig_back, dir, tris[i].v0.xyz, tris[i].v1.xyz, tris[i].v2.xyz);
         if (t < 1e19) {
             float dist_from_base = t - offset;
-            if (abs(dist_from_base) < min_abs_t) {
-                min_abs_t = abs(dist_from_base);
-                best_t = dist_from_base;
+            // Only accept hits within a reasonable range (e.g., 10cm for VRoid)
+            if (abs(dist_from_base) < 0.1) { 
+                if (abs(dist_from_base) < min_abs_t) {
+                    min_abs_t = abs(dist_from_base);
+                    best_t = dist_from_base;
+                }
             }
         }
     }
