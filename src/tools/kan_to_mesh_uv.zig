@@ -138,13 +138,12 @@ pub fn main() !void {
             for (0..3) |j| {
                 const pos = positions.items[face.v_idx[j]];
                 
-                // Determine Normal: 
-                // 1. If explicit normals exist, use them.
-                // 2. Otherwise, use normalized position (assumes centered on origin)
-                var normal = if (normals.items.len > face.vn_idx[j]) normals.items[face.vn_idx[j]] else pos.normalize();
+                const net_out = activations[net.layers.len][(i * 3 + j) * net.out_dim .. (i * 3 + j) * net.out_dim + 3];
+                const dx = net_out[0];
+                const dy = net_out[1];
+                const dz = net_out[2];
                 
-                const d = activations[net.layers.len][(i * 3 + j) * net.out_dim];
-                const displaced_pos = pos.add(normal.mul(d));
+                const displaced_pos = pos.add(.{ .x = dx, .y = dy, .z = dz });
                 
                 try writer.print("v {d:0.6} {d:0.6} {d:0.6}\n", .{displaced_pos.x, displaced_pos.y, displaced_pos.z});
                 const uv = if (uvs.items.len > face.vt_idx[j]) uvs.items[face.vt_idx[j]] else Vec2{ .u = 0, .v = 0 };

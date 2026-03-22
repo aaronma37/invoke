@@ -73,7 +73,14 @@ void main() {
 
     if (min_abs_t < 1e19) {
         samples[idx].sdf = best_t;
+        vec3 displacement = dir * best_t;
+        samples[idx].r = displacement.x;
+        samples[idx].g = displacement.y;
+        samples[idx].b = displacement.z;
     } else {
         samples[idx].sdf = 0.0;
+        samples[idx].r = 0.0;
+        samples[idx].g = 0.0;
+        samples[idx].b = 0.0;
     }
 }

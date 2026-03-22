@@ -45,12 +45,19 @@ pub const DataLoader = struct {
             }
             
             // Map targets to AoS: [batch][dim]
-            if (out_dim >= 1) targets[b * out_dim + 0] = s.sdf;
-            if (out_dim >= 2) targets[b * out_dim + 1] = s.r;
-            if (out_dim >= 3) targets[b * out_dim + 2] = s.g;
-            if (out_dim >= 4) targets[b * out_dim + 3] = s.b;
-            if (out_dim >= 5) targets[b * out_dim + 4] = s.roughness;
-            if (out_dim >= 6) targets[b * out_dim + 5] = s.metallic;
+            if (in_dim == 2 and out_dim == 3) {
+                // VECTOR DISPLACEMENT: UV -> (DX, DY, DZ)
+                targets[b * 3 + 0] = s.r;
+                targets[b * 3 + 1] = s.g;
+                targets[b * 3 + 2] = s.b;
+            } else {
+                if (out_dim >= 1) targets[b * out_dim + 0] = s.sdf;
+                if (out_dim >= 2) targets[b * out_dim + 1] = s.r;
+                if (out_dim >= 3) targets[b * out_dim + 2] = s.g;
+                if (out_dim >= 4) targets[b * out_dim + 3] = s.b;
+                if (out_dim >= 5) targets[b * out_dim + 4] = s.roughness;
+                if (out_dim >= 6) targets[b * out_dim + 5] = s.metallic;
+            }
         }
     }
 };
