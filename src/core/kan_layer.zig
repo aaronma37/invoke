@@ -61,9 +61,6 @@ pub const KanLayer = struct {
     pub fn forward(self: KanLayer, inputs: []const f32, outputs: []f32, batch_size: usize) void {
         const h = self.knots[1] - self.knots[0];
         const inv_h = 1.0 / h;
-        const safe_min = self.knots[3];
-        const safe_max = self.knots[self.num_coeffs];
-
         const vec_len = 16;
         const V = @Vector(vec_len, f32);
         
@@ -74,12 +71,15 @@ pub const KanLayer = struct {
 
         for (0..batch_size) |b| {
             // --- PASS 1: PRECALCULATE MATH ---
+            var silu_buf: [128]f32 = undefined;
             var k_base_buf: [128]usize = undefined;
             var b_vals_buf: [128][4]f32 = undefined;
 
             for (0..self.in_dim) |i| {
                 const x_raw = inputs[b * self.in_dim + i];
-                const x = std.math.clamp(x_raw, safe_min + 1e-6, safe_max - 1e-6);
+                silu_buf[i] = x_raw / (1.0 + kan_spline.fast_exp(-x_raw));
+
+                const x = std.math.clamp(x_raw, self.knot_min + 1e-6, self.knot_max - 1e-6);
                 const span_float = (x - self.knots[0]) * inv_h;
                 const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
                 const u = span_float - @as(f32, @floatFromInt(span_idx));
@@ -89,7 +89,14 @@ pub const KanLayer = struct {
             }
 
             var acc_regs: [MAX_VECS]V = undefined;
-            for (0..num_vecs) |v| acc_regs[v] = @as(V, @splat(0.0));
+            const inv_in_dim = 1.0 / @as(f32, @floatFromInt(self.in_dim));
+            for (0..num_vecs) |v| {
+                var sum_silu = @as(V, @splat(0.0));
+                for (0..self.in_dim) |i| {
+                    sum_silu += @as(V, @splat(silu_buf[i] * inv_in_dim));
+                }
+                acc_regs[v] = sum_silu;
+            }
 
             // --- PASS 2: PURE FMA ---
             for (0..self.in_dim) |i| {
@@ -135,9 +142,6 @@ pub const KanLayer = struct {
 
         const h = self.knots[1] - self.knots[0];
         const inv_h = 1.0 / h;
-        const safe_min = self.knots[3];
-        const safe_max = self.knots[self.num_coeffs];
-
         const vec_len = 16;
         const V = @Vector(vec_len, f32);
         
@@ -148,13 +152,19 @@ pub const KanLayer = struct {
 
         for (0..batch_size) |b| {
             // --- PASS 1: PRECALCULATE MATH ---
+            var silu_buf: [128]f32 = undefined;
+            var silup_buf: [128]f32 = undefined;
             var k_base_buf: [128]usize = undefined;
             var b_vals_buf: [128][4]f32 = undefined;
             var bp_vals_buf: [128][4]f32 = undefined;
 
             for (0..self.in_dim) |i| {
                 const x_raw = inputs[b * self.in_dim + i];
-                const x = std.math.clamp(x_raw, safe_min + 1e-6, safe_max - 1e-6);
+                const sigmoid = 1.0 / (1.0 + kan_spline.fast_exp(-x_raw));
+                silu_buf[i] = x_raw * sigmoid;
+                silup_buf[i] = sigmoid * (1.0 + x_raw * (1.0 - sigmoid));
+
+                const x = std.math.clamp(x_raw, self.knot_min + 1e-6, self.knot_max - 1e-6);
                 const span_float = (x - self.knots[0]) * inv_h;
                 const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
                 const u = span_float - @as(f32, @floatFromInt(span_idx));
@@ -166,9 +176,17 @@ pub const KanLayer = struct {
 
             // --- PASS 2: FUSED FMA ---
             var acc_regs: [MAX_VECS]V = undefined;
-            for (0..num_vecs) |v| acc_regs[v] = @as(V, @splat(0.0));
+            const inv_in_dim = 1.0 / @as(f32, @floatFromInt(self.in_dim));
+            for (0..num_vecs) |v| {
+                var sum_silu = @as(V, @splat(0.0));
+                for (0..self.in_dim) |i| {
+                    sum_silu += @as(V, @splat(silu_buf[i] * inv_in_dim));
+                }
+                acc_regs[v] = sum_silu;
+            }
 
             for (0..self.in_dim) |i| {
+                const silup = silup_buf[i];
                 const b_vals = b_vals_buf[i];
                 const bp_vals = bp_vals_buf[i];
                 const k_base = k_base_buf[i];
@@ -178,6 +196,13 @@ pub const KanLayer = struct {
                 while (v < num_vecs) : (v += 1) {
                     const j = v * vec_len;
                     var out_v = acc_regs[v];
+
+                    // Write jacobians explicitly (since they are strided by in_dim)
+                    for (0..vec_len) |v_idx| {
+                        if (j + v_idx < self.out_dim) {
+                            jacobians[b * self.out_dim * self.in_dim + (j + v_idx) * self.in_dim + i] += silup;
+                        }
+                    }
 
                     for (0..4) |a| {
                         const k_u = k_base + a;
@@ -217,9 +242,6 @@ pub const KanLayer = struct {
 
         const h = self.knots[1] - self.knots[0];
         const inv_h = 1.0 / h;
-        const safe_min = self.knots[3];
-        const safe_max = self.knots[self.num_coeffs];
-
         const vec_len = 16;
         const V = @Vector(vec_len, f32);
 
@@ -239,14 +261,25 @@ pub const KanLayer = struct {
 
                 var b_vals_block: [BLOCK_SIZE][4]f32 = undefined;
                 var bp_vals_block: [BLOCK_SIZE][4]f32 = undefined;
+                var silup_block: [BLOCK_SIZE]f32 = undefined;
 
                 var counts = [_]u16{0} ** 128;
 
                 for (0..cur_block_size) |idx| {
                     const b = b_start + idx;
                     const x_raw = inputs[b * self.in_dim + i];
+                    const sigmoid = 1.0 / (1.0 + kan_spline.fast_exp(-x_raw));
+                    silup_block[idx] = sigmoid * (1.0 + x_raw * (1.0 - sigmoid));
 
-                    const x = std.math.clamp(x_raw, safe_min + 1e-6, safe_max - 1e-6);
+                    // sum of gradients from all output nodes for this point
+                    var sum_og: f32 = 0.0;
+                    for (0..self.out_dim) |j_idx| {
+                        sum_og += out_grad[b * self.out_dim + j_idx];
+                    }
+                    const inv_in_dim = 1.0 / @as(f32, @floatFromInt(self.in_dim));
+                    in_grad[b * self.in_dim + i] += (sum_og * inv_in_dim) * silup_block[idx];
+
+                    const x = std.math.clamp(x_raw, self.knot_min + 1e-6, self.knot_max - 1e-6);
                     const span_float = (x - self.knots[0]) * inv_h;
                     const span_idx = @as(isize, @intFromFloat(@floor(span_float)));
                     const u = span_float - @as(f32, @floatFromInt(span_idx));

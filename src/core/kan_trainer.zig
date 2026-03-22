@@ -202,12 +202,12 @@ pub const KanTrainer = struct {
     };
 
     fn trainTaskFunc(task: TrainTask) void {
-        const batch_size = task.end_idx - task.start_idx;
-        const net = task.trainer.net;
         const state = &task.trainer.thread_states[task.state_idx];
-        
-        const global_inputs_soa = task.batch.inputs;
-        const global_targets_soa = task.batch.targets;
+        const net = task.trainer.net;
+        const batch_size = task.end_idx - task.start_idx;
+
+        const global_inputs = task.batch.inputs;
+        const global_targets = task.batch.targets;
 
         var local_activations: [16][]f32 = undefined;
         for (0..net.layers.len + 1) |i| {
@@ -220,37 +220,36 @@ pub const KanTrainer = struct {
         for (state.coeff_grads) |g| @memset(g, 0.0);
         
         const in_dim = net.layers[0].in_dim;
-        const total_batch = task.batch.batch_size;
-        for (0..in_dim) |i| {
-            const src_row = global_inputs_soa[i * total_batch + task.start_idx .. i * total_batch + task.end_idx];
-            @memcpy(local_activations[0][i * batch_size .. (i + 1) * batch_size], src_row);
-        }
+        const out_dim = net.out_dim;
+
+        // Copy input chunk (AoS)
+        const input_src = global_inputs[task.start_idx * in_dim .. task.end_idx * in_dim];
+        @memcpy(local_activations[0][0 .. batch_size * in_dim], input_src);
 
         net.forward(local_activations[0], local_activations[0 .. net.layers.len + 1], batch_size);
 
-        const out_dim = net.out_dim;
-        const final_acts_soa = local_activations[net.layers.len];
-        const out_grad_soa = state.out_grad[0 .. batch_size * out_dim];
-        @memset(out_grad_soa, 0.0);
+        const final_acts = local_activations[net.layers.len];
+        const out_grad = state.out_grad[0 .. batch_size * out_dim];
+        @memset(out_grad, 0.0);
 
         var loss_acc: f32 = 0.0;
-        const inv_batch = 1.0 / @as(f32, @floatFromInt(batch_size));
-        for (0..out_dim) |d| {
-            const pred_row = final_acts_soa[d * batch_size .. (d + 1) * batch_size];
-            const target_row = global_targets_soa[d * total_batch + task.start_idx .. d * total_batch + task.end_idx];
-            
-            for (0..batch_size) |b| {
-                const target = target_row[b];
+        const inv_total_batch = 1.0 / @as(f32, @floatFromInt(task.batch.batch_size));
+        const target_chunk = global_targets[task.start_idx * out_dim .. task.end_idx * out_dim];
+
+        for (0..batch_size) |b| {
+            for (0..out_dim) |d| {
+                const pred = final_acts[b * out_dim + d];
+                const target = target_chunk[b * out_dim + d];
                 const weight = if (target == 0.0) task.trainer.lambda_shape else 1.0;
-                const diff = pred_row[b] - target;
-                loss_acc += 0.5 * weight * diff * diff * inv_batch;
-                out_grad_soa[d * batch_size + b] = weight * diff;
+                const diff = pred - target;
+                loss_acc += 0.5 * weight * diff * diff * inv_total_batch;
+                out_grad[b * out_dim + d] = weight * diff;
             }
         }
         task.local_loss.* = loss_acc;
 
         const const_activations = @as([][]const f32, @ptrCast(local_activations[0..net.layers.len+1]));
-        net.backward(const_activations, out_grad_soa, state.coeff_grads, local_scratch[0..net.layers.len], batch_size, state.bucket_scratch);
+        net.backward(const_activations, out_grad, state.coeff_grads, local_scratch[0..net.layers.len], batch_size, state.bucket_scratch);
     }
 
     fn poolRunWrapper(wait_group: *std.Thread.WaitGroup, task: TrainTask) void {

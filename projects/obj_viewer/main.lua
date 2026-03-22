@@ -12,6 +12,8 @@ local input = require("mc.input")
 local sdl = require("vulkan.sdl")
 local bit = require("bit")
 
+local function clamp(x, lo, hi) return x < lo and lo or (x > hi and hi or x) end
+
 local M = { 
     cam_dist = 3.0,
     cam_yaw = 0,
@@ -78,12 +80,28 @@ function M.update()
     local idx = sw:acquire_next_image(image_available_sem)
     if idx == nil then return end
     
-    -- Orbit controls
+    -- Mouse controls
+    local left_down = input.mouse_down(1)
+    local mx, my = input.mouse_pos()
+    
+    if left_down then
+        if M.last_mx then
+            local dx = mx - M.last_mx
+            local dy = my - M.last_my
+            M.cam_yaw = M.cam_yaw - dx * 0.01
+            M.cam_pitch = clamp(M.cam_pitch + dy * 0.01, -1.5, 1.5)
+        end
+    end
+    M.last_mx, M.last_my = mx, my
+
+    -- Orbit controls (Arrow keys)
     local rot_speed = 0.03
     if input.key_down(input.SCANCODE_LEFT) then M.cam_yaw = M.cam_yaw - rot_speed end
     if input.key_down(input.SCANCODE_RIGHT) then M.cam_yaw = M.cam_yaw + rot_speed end
     if input.key_down(input.SCANCODE_UP) then M.cam_pitch = math.min(M.cam_pitch + rot_speed, 1.5) end
     if input.key_down(input.SCANCODE_DOWN) then M.cam_pitch = math.max(M.cam_pitch - rot_speed, -1.5) end
+    
+    -- Zoom
     if input.key_down(input.SCANCODE_W) then M.cam_dist = math.max(M.cam_dist - 0.1, 0.1) end
     if input.key_down(input.SCANCODE_S) then M.cam_dist = M.cam_dist + 0.1 end
 

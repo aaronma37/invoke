@@ -34,23 +34,23 @@ pub const DataLoader = struct {
         for (0..batch_size) |b| {
             const s = self.samples[rand.uintLessThan(usize, self.samples.len)];
             
-            // Map inputs to SoA: [dim][batch]
+            // Map inputs to AoS: [batch][dim]
             if (in_dim == 3) {
-                inputs[0 * batch_size + b] = s.x;
-                inputs[1 * batch_size + b] = s.y;
-                inputs[2 * batch_size + b] = s.z;
+                inputs[b * 3 + 0] = s.x;
+                inputs[b * 3 + 1] = s.y;
+                inputs[b * 3 + 2] = s.z;
             } else if (in_dim == 2) {
-                inputs[0 * batch_size + b] = s.x; // maps to u
-                inputs[1 * batch_size + b] = s.y; // maps to v
+                inputs[b * 2 + 0] = s.x; // maps to u
+                inputs[b * 2 + 1] = s.y; // maps to v
             }
             
-            // Map targets to SoA: [dim][batch]
-            if (out_dim >= 1) targets[0 * batch_size + b] = s.sdf;
-            if (out_dim >= 2) targets[1 * batch_size + b] = s.r;
-            if (out_dim >= 3) targets[2 * batch_size + b] = s.g;
-            if (out_dim >= 4) targets[3 * batch_size + b] = s.b;
-            if (out_dim >= 5) targets[4 * batch_size + b] = s.roughness;
-            if (out_dim >= 6) targets[5 * batch_size + b] = s.metallic;
+            // Map targets to AoS: [batch][dim]
+            if (out_dim >= 1) targets[b * out_dim + 0] = s.sdf;
+            if (out_dim >= 2) targets[b * out_dim + 1] = s.r;
+            if (out_dim >= 3) targets[b * out_dim + 2] = s.g;
+            if (out_dim >= 4) targets[b * out_dim + 3] = s.b;
+            if (out_dim >= 5) targets[b * out_dim + 4] = s.roughness;
+            if (out_dim >= 6) targets[b * out_dim + 5] = s.metallic;
         }
     }
 };
