@@ -2,9 +2,9 @@
 layout(local_size_x = 256) in;
 
 struct Vertex {
-    vec3 pos;
-    vec3 normal;
-    vec3 color;
+    float px, py, pz;
+    float nx, ny, nz;
+    float cr, cg, cb;
 };
 
 struct Sample {
@@ -18,6 +18,7 @@ layout(set = 0, binding = 0) buffer BaseVertices { Vertex base_verts[]; };
 layout(set = 0, binding = 1) buffer BaseUVs { Sample base_uvs[]; };
 layout(set = 0, binding = 2) buffer MorphVertices { Vertex morph_verts[]; };
 layout(set = 0, binding = 3) buffer KanWeights { float coeffs[]; };
+layout(set = 0, binding = 4) buffer DebugBuffer { float debug_data[]; };
 
 layout(push_constant) uniform PushConstants {
     float latents[16];
@@ -117,7 +118,23 @@ void main() {
     }
 
     // 4. Apply Displacement
-    morph_verts[idx].pos = base_verts[idx].pos + vec3(d[0], d[1], d[2]);
-    morph_verts[idx].normal = base_verts[idx].normal;
-    morph_verts[idx].color = base_verts[idx].color;
+    morph_verts[idx].px = base_verts[idx].px + d[0];
+    morph_verts[idx].py = base_verts[idx].py + d[1];
+    morph_verts[idx].pz = base_verts[idx].pz + d[2];
+    
+    morph_verts[idx].nx = base_verts[idx].nx;
+    morph_verts[idx].ny = base_verts[idx].ny;
+    morph_verts[idx].nz = base_verts[idx].nz;
+    
+    morph_verts[idx].cr = base_verts[idx].cr;
+    morph_verts[idx].cg = base_verts[idx].cg;
+    morph_verts[idx].cb = base_verts[idx].cb;
+
+    if (idx == 0) {
+        debug_data[0] = x[0];
+        debug_data[1] = x[1];
+        debug_data[2] = pc.latents[0];
+        debug_data[3] = coeffs[pc.layer1_offset];
+        debug_data[4] = d[0];
+    }
 }

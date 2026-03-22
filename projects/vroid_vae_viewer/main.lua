@@ -24,7 +24,7 @@ local M = {
 }
 
 local device, queue, sw, render_layout, graphics_pipe, compute_layout, compute_pipeline_layout, compute_pipe
-local base_vbuf, uv_buf, morph_vbuf, weight_buf
+local base_vbuf, uv_buf, morph_vbuf, weight_buf, debug_buf
 local vertex_count, depth_img, ds_compute
 local cb, image_available_sem, frame_fence
 
@@ -40,7 +40,6 @@ function M.init()
     queue = q
     sw = swapchain.new(vulkan.get_instance(), physical_device, device, _G._SDL_WINDOW)
 
-    -- Initialize ImGui
     pcall(imgui.init)
     imgui.get_io = function() return imgui._S.ffi_lib.igGetIO_Nil() end
 
@@ -48,7 +47,7 @@ function M.init()
     local data, count = loader.load(base_obj)
     vertex_count = count
     base_vbuf = mc.buffer(ffi.sizeof(data), "storage", data)
-    morph_vbuf = mc.buffer(ffi.sizeof(data), "vertex", nil)
+    morph_vbuf = mc.buffer(ffi.sizeof(data), "vertex_storage", nil)
 
     local pcb_path = "artifacts/datasets/vroid_batch_pcb/vroid_0000.pcb"
     local f = io.open(pcb_path, "rb")
@@ -67,17 +66,21 @@ function M.init()
         {binding=0, type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages=vk.VK_SHADER_STAGE_COMPUTE_BIT},
         {binding=1, type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages=vk.VK_SHADER_STAGE_COMPUTE_BIT},
         {binding=2, type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages=vk.VK_SHADER_STAGE_COMPUTE_BIT},
-        {binding=3, type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages=vk.VK_SHADER_STAGE_COMPUTE_BIT}
+        {binding=3, type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages=vk.VK_SHADER_STAGE_COMPUTE_BIT},
+        {binding=4, type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages=vk.VK_SHADER_STAGE_COMPUTE_BIT}
     })
     compute_pipeline_layout = pipeline.create_layout(device, {compute_layout}, {{stageFlags=vk.VK_SHADER_STAGE_COMPUTE_BIT, offset=0, size=128}})
     local c_mod = shader.create_module(device, shader.compile_glsl(io.open("projects/vroid_vae_viewer/vae_morph.comp"):read("*all"), vk.VK_SHADER_STAGE_COMPUTE_BIT))
     compute_pipe = pipeline.create_compute_pipeline(device, compute_pipeline_layout, c_mod)
     
-    ds_compute = descriptors.allocate_sets(device, descriptors.create_pool(device, {{type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, count=4}}), {compute_layout})[1]
+    ds_compute = descriptors.allocate_sets(device, descriptors.create_pool(device, {{type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, count=5}}), {compute_layout})[1]
     descriptors.update_buffer_set(device, ds_compute, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, base_vbuf.handle, 0, base_vbuf.size)
     descriptors.update_buffer_set(device, ds_compute, 1, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, uv_buf.handle, 0, uv_buf.size)
     descriptors.update_buffer_set(device, ds_compute, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, morph_vbuf.handle, 0, morph_vbuf.size)
     descriptors.update_buffer_set(device, ds_compute, 3, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, weight_buf.handle, 0, weight_buf.size)
+    
+    debug_buf = mc.buffer(4096, "storage", nil, true)
+    descriptors.update_buffer_set(device, ds_compute, 4, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, debug_buf.handle, 0, debug_buf.size)
 
     -- 4. Graphics Pipeline (Rendering)
     local depth_format = image.find_depth_format(physical_device)
@@ -96,12 +99,12 @@ function M.init()
         depth_test = true, depth_write = true, depth_format = depth_format
     })
 
-    -- Sync
     cb = command.allocate_buffers(device, command.create_pool(device, family), 1)[1]
     frame_fence = ffi.new("VkFence[1]"); vk.vkCreateFence(device, ffi.new("VkFenceCreateInfo", {sType=vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, flags=vk.VK_FENCE_CREATE_SIGNALED_BIT}), nil, frame_fence); frame_fence = frame_fence[0]
     image_available_sem = ffi.new("VkSemaphore[1]"); vk.vkCreateSemaphore(device, ffi.new("VkSemaphoreCreateInfo", {sType=vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO}), nil, image_available_sem); image_available_sem = image_available_sem[0]
 end
 
+local last_debug_print = 0
 function M.update()
     vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {frame_fence}), vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {frame_fence}))
@@ -109,20 +112,37 @@ function M.update()
     local idx = sw:acquire_next_image(image_available_sem)
     if idx == nil then return end
 
+    -- Debug Readout
+    local now = os.clock()
+    if now - last_debug_print > 1.0 then
+        local d_ptr = ffi.cast("float*", debug_buf.allocation.ptr)
+        if d_ptr ~= nil then
+            io.write(string.format("[GPU DEBUG] UV=(%.4f, %.4f) Weight0=%.4f dX=%.4f\n", d_ptr[0], d_ptr[1], d_ptr[3], d_ptr[4]))
+            io.flush()
+        end
+        last_debug_print = now
+    end
+
     -- GUI
     imgui.new_frame()
     local gui = imgui.gui
     if gui.igBegin("VAE Sliders", nil, 0) then
+        -- Default to 0.5 on first load
+        if not M.latents_initialized then
+            for i=0, 15 do M.latents[i] = 0.5 end
+            M.latents_initialized = true
+            M.update_morph = true
+        end
+
         for i=0, 15 do
-            local changed = gui.igSliderFloat("Latent " .. i, M.latents + i, -2.0, 2.0, "%.3f", 1.0)
+            local changed = gui.igSliderFloat("Latent " .. i, M.latents + i, 0.0, 1.0, "%.3f", 1.0)
             if changed then M.update_morph = true end
         end
     end
     gui.igEnd()
 
-    -- Orbit Camera
     local mx, my = input.mouse_pos()
-    if input.mouse_down(1) and not imgui.get_io().WantCaptureMouse then
+    if input.mouse_down(1) then
         if M.last_mx then
             M.cam_yaw = M.cam_yaw - (mx - M.last_mx) * 0.01
             M.cam_pitch = clamp(M.cam_pitch + (my - M.last_my) * 0.01, -1.5, 1.5)
@@ -147,17 +167,13 @@ function M.update()
     local push = ffi.new("struct { float l[16]; uint32_t count; uint32_t off1; uint32_t off2; uint32_t out1; uint32_t out2; float kmin1; float kmax1; float kmin2; float kmax2; }")
     for i=0,15 do push.l[i] = M.latents[i] end
     push.count = vertex_count
-    
-    -- Layer 1: 18 -> 64, 8 coeffs. 
     push.off1 = 19
     push.out1 = 64
     push.kmin1 = 0.0 
     push.kmax1 = 1.0
-    
-    -- Layer 2: 64 -> 3, 8 coeffs.
     push.off2 = 9252
     push.out2 = 16 
-    push.kmin2 = -1.0 -- Hidden layer knots
+    push.kmin2 = -1.0
     push.kmax2 = 1.0
     
     vk.vkCmdPushConstants(cb, compute_pipeline_layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, 128, push)
@@ -204,7 +220,6 @@ function M.update()
     vk.vkCmdBindVertexBuffers(cb, 0, 1, ffi.new("VkBuffer[1]", {morph_vbuf.handle}), ffi.new("VkDeviceSize[1]", {0}))
     vk.vkCmdPushConstants(cb, render_layout, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 64, mvp.m)
     vk.vkCmdDraw(cb, vertex_count, 1, 0, 0)
-    
     imgui.render(cb)
     vk.vkCmdEndRendering(cb)
 
