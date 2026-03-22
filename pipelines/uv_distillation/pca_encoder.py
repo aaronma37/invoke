@@ -35,6 +35,16 @@ def run_pca(dataset_dir, n_components=16):
     pca = PCA(n_components=n_components)
     latents = pca.fit_transform(matrix)
     
+    # Normalize latents to [0, 1] for KAN compatibility
+    latents_min = latents.min(axis=0)
+    latents_max = latents.max(axis=0)
+    
+    # Avoid division by zero
+    range_vals = latents_max - latents_min
+    range_vals[range_vals == 0] = 1.0 
+    
+    latents_norm = (latents - latents_min) / range_vals
+
     # Explained variance tells us how much "Human Information" we captured
     variance = np.sum(pca.explained_variance_ratio_)
     print(f"PCA Complete! 16 sliders capture {variance*100:.2f}% of the total body variation.")
@@ -43,7 +53,7 @@ def run_pca(dataset_dir, n_components=16):
     output_data = {}
     for i, file in enumerate(files):
         name = os.path.basename(file).replace(".pcb", "")
-        output_data[name] = latents[i].tolist()
+        output_data[name] = latents_norm[i].tolist()
 
     with open("artifacts/datasets/vroid_latents.json", "w") as f:
         json.dump(output_data, f)

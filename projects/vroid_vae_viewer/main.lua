@@ -141,14 +141,28 @@ function M.update()
     end
     gui.igEnd()
 
+    local io = imgui.get_io()
+    local want_capture = false
+    if io ~= nil then
+        want_capture = (io.WantCaptureMouse == true or io.WantCaptureMouse == 1)
+    end
+
     local mx, my = input.mouse_pos()
-    if input.mouse_down(1) then
+    if input.mouse_down(1) and not want_capture then
         if M.last_mx then
             M.cam_yaw = M.cam_yaw - (mx - M.last_mx) * 0.01
             M.cam_pitch = clamp(M.cam_pitch + (my - M.last_my) * 0.01, -1.5, 1.5)
         end
     end
     M.last_mx, M.last_my = mx, my
+
+    local rot_speed = 0.03
+    if input.key_down(input.SCANCODE_LEFT) then M.cam_yaw = M.cam_yaw - rot_speed end
+    if input.key_down(input.SCANCODE_RIGHT) then M.cam_yaw = M.cam_yaw + rot_speed end
+    if input.key_down(input.SCANCODE_UP) then M.cam_pitch = math.min(M.cam_pitch + rot_speed, 1.5) end
+    if input.key_down(input.SCANCODE_DOWN) then M.cam_pitch = math.max(M.cam_pitch - rot_speed, -1.5) end
+    if input.key_down(input.SCANCODE_W) then M.cam_dist = math.max(M.cam_dist - 0.1, 0.1) end
+    if input.key_down(input.SCANCODE_S) then M.cam_dist = M.cam_dist + 0.1 end
     
     local cam_x = M.target[1] + M.cam_dist * math.cos(M.cam_pitch) * math.sin(M.cam_yaw)
     local cam_y = M.target[2] + M.cam_dist * math.sin(M.cam_pitch)
