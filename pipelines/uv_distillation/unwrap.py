@@ -29,10 +29,18 @@ def unwrap_mesh(mesh, output_path):
     with open(output_path, 'w') as f:
         for v in new_vertices:
             f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+        
+        # Add vertex normals
+        new_normals = mesh.vertex_normals[vmapping]
+        for n in new_normals:
+            f.write(f"vn {n[0]:.6f} {n[1]:.6f} {n[2]:.6f}\n")
+            
         for uv in uvs:
             f.write(f"vt {uv[0]:.6f} {uv[1]:.6f}\n")
+            
         for face in indices:
-            f.write(f"f {face[0]+1}/{face[0]+1} {face[1]+1}/{face[1]+1} {face[2]+1}/{face[2]+1}\n")
+            # f v/vt/vn
+            f.write(f"f {face[0]+1}/{face[0]+1}/{face[0]+1} {face[1]+1}/{face[1]+1}/{face[1]+1} {face[2]+1}/{face[2]+1}/{face[2]+1}\n")
             
     print(f"Successfully saved unwrapped base mesh to {output_path}")
     return new_vertices, indices, uvs

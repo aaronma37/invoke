@@ -50,9 +50,9 @@ pub fn main() !void {
     defer loader.deinit();
 
     const dims_sdf = [_]usize{ 3, 32, 32, 1 };
-    const dims_disp = [_]usize{ 2, 64, 64, 1 };
+    const dims_disp = [_]usize{ 2, 32, 1 };
     const dims: []const usize = if (task == .sdf) &dims_sdf else &dims_disp;
-    const num_coeffs = 16;
+    const num_coeffs = 8;
     
     // Resume if model exists, otherwise init fresh
     var trainer: *KanTrainer = undefined;
