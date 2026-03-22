@@ -50,23 +50,29 @@ void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= settings.query_count) return;
 
-    vec3 orig = queries[idx].origin.xyz;
+    vec3 base_pos = queries[idx].origin.xyz;
     vec3 dir = queries[idx].direction.xyz;
+    
+    // Shoot both ways to find closest surface
+    float offset = 0.5; // Large enough for Stanford Bunny scale
+    vec3 orig_back = base_pos - dir * offset;
+    
+    float min_abs_t = 1e20;
+    float best_t = 0.0;
 
-    float min_t = 1e20;
-
-    // Brute force intersection for now
-    // Optimization: In a real high-poly scenario, we'd use a BVH.
-    // For 70k triangles, this should still be ~100x faster than single-threaded CPU.
     for (uint i = 0; i < settings.tri_count; i++) {
-        float t = rayTriangleIntersect(orig, dir, tris[i].v0.xyz, tris[i].v1.xyz, tris[i].v2.xyz);
-        if (t < min_t) {
-            min_t = t;
+        float t = rayTriangleIntersect(orig_back, dir, tris[i].v0.xyz, tris[i].v1.xyz, tris[i].v2.xyz);
+        if (t < 1e19) {
+            float dist_from_base = t - offset;
+            if (abs(dist_from_base) < min_abs_t) {
+                min_abs_t = abs(dist_from_base);
+                best_t = dist_from_base;
+            }
         }
     }
 
-    if (min_t < 1e19) {
-        samples[idx].sdf = min_t;
+    if (min_abs_t < 1e19) {
+        samples[idx].sdf = best_t;
     } else {
         samples[idx].sdf = 0.0;
     }

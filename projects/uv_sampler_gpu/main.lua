@@ -66,13 +66,14 @@ function M.init()
         query_data[i].origin[2] = vert.pos[3]
         query_data[i].origin[3] = 1.0
         
-        -- Ray direction is the vertex normal (or normalized position for sphere)
+        -- Ray direction is the vertex normal
         local nx, ny, nz = vert.normal[1], vert.normal[2], vert.normal[3]
         local mag = math.sqrt(nx*nx + ny*ny + nz*nz)
         if mag < 1e-6 then 
-            -- Fallback to normalized position
+            -- Fallback to normalized position (centered at origin)
             nx, ny, nz = vert.pos[1], vert.pos[2], vert.pos[3]
             mag = math.sqrt(nx*nx + ny*ny + nz*nz)
+            if mag < 1e-6 then nx, ny, nz, mag = 0, 1, 0, 1 end
         end
         query_data[i].direction[0] = nx / mag
         query_data[i].direction[1] = ny / mag
@@ -89,6 +90,12 @@ function M.init()
     end
     query_buf:upload(query_data)
     sample_buf:upload(sample_data)
+
+    for i=0, 4 do
+        print(string.format("Query %d: pos=(%.3f, %.3f, %.3f) dir=(%.3f, %.3f, %.3f)", i, 
+            query_data[i].origin[0], query_data[i].origin[1], query_data[i].origin[2],
+            query_data[i].direction[0], query_data[i].direction[1], query_data[i].direction[2]))
+    end
 
     -- 3. Pipeline Setup
     local l = descriptors.create_layout(d, {
@@ -126,9 +133,9 @@ function M.init()
     end)
     
     print("Dispatching Compute Shader...")
-    local start_time = os.clock()
+    local start_time = os.time()
     command.end_and_submit(cb, q, d); vk.vkDeviceWaitIdle(d)
-    print(string.format("GPU Time: %.3f seconds", os.clock() - start_time))
+    print(string.format("GPU Total Time: %d seconds", os.time() - start_time))
 
     -- 5. Save Result
     local f = io.open(output_path, "wb")

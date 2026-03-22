@@ -144,10 +144,6 @@ pub fn main() !void {
                 var normal = if (normals.items.len > face.vn_idx[j]) normals.items[face.vn_idx[j]] else pos.normalize();
                 
                 const d = activations[net.layers.len][(i * 3 + j) * net.out_dim];
-                if (d > 2.0 or d < -2.0) {
-                    const debug_uv = if (uvs.items.len > face.vt_idx[j]) uvs.items[face.vt_idx[j]] else Vec2{ .u = 0, .v = 0 };
-                    std.debug.print("Large displacement detected: d={d:0.4} at UV=({d:0.4}, {d:0.4})\n", .{d, debug_uv.u, debug_uv.v});
-                }
                 const displaced_pos = pos.add(normal.mul(d));
                 
                 try writer.print("v {d:0.6} {d:0.6} {d:0.6}\n", .{displaced_pos.x, displaced_pos.y, displaced_pos.z});

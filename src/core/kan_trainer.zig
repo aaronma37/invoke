@@ -376,6 +376,6 @@ pub const KanTrainer = struct {
         }
 
         self.optimizer.step(&self.net, self.thread_states[0].coeff_grads);
-        return total_loss / @as(f32, @floatFromInt(batch_size));
+        return total_loss;
     }
 };
