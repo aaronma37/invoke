@@ -26,12 +26,25 @@ pub fn main() !void {
 
     var task: kan.kan_trainer.TaskType = .sdf;
     var use_eikonal = true;
-    for (args) |arg| {
+    var custom_model_path: ?[]const u8 = null;
+
+    var arg_i: usize = 0;
+    while (arg_i < args.len) : (arg_i += 1) {
+        const arg = args[arg_i];
         if (std.mem.eql(u8, arg, "--no-eikonal")) use_eikonal = false;
         if (std.mem.eql(u8, arg, "displacement")) task = .displacement;
+        if (std.mem.eql(u8, arg, "--output")) {
+            if (arg_i + 1 < args.len) {
+                arg_i += 1;
+                custom_model_path = args[arg_i];
+            }
+        }
     }
 
+    const model_path = custom_model_path orelse if (task == .sdf) "model_sdf.kan" else "model_disp.kan";
+
     std.debug.print("Task: {s}\n", .{@tagName(task)});
+    std.debug.print("Model Path: {s}\n", .{model_path});
     std.debug.print("Loading dataset: {s}...\n", .{pcb_path});
     var loader = try DataLoader.init(allocator, pcb_path);
     defer loader.deinit();
@@ -43,7 +56,6 @@ pub fn main() !void {
     
     // Resume if model exists, otherwise init fresh
     var trainer: *KanTrainer = undefined;
-    const model_path = if (task == .sdf) "model_sdf.kan" else "model_disp.kan";
     const model_exists = if (std.fs.cwd().access(model_path, .{})) |_| true else |_| false;
     
     if (model_exists) {
@@ -56,6 +68,7 @@ pub fn main() !void {
     }
     defer trainer.deinit();
     
+    trainer.lambda_shape = 10.0;
     trainer.optimizer.learning_rate = lr;
 
     const inputs = try allocator.alloc(f32, batch_size * dims[0]);

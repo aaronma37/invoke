@@ -16,7 +16,11 @@ pub const KanNetwork = struct {
         errdefer allocator.free(layers);
 
         for (0..layers.len) |i| {
-            layers[i] = try KanLayer.init(allocator, layer_dims[i], layer_dims[i + 1], num_coeffs);
+            // First layer (UV input) is [0, 1]
+            // Hidden layers are [-1, 1]
+            const k_min: f32 = if (i == 0) 0.0 else -1.0;
+            const k_max: f32 = if (i == 0) 1.0 else 1.0;
+            layers[i] = try KanLayer.init(allocator, layer_dims[i], layer_dims[i + 1], num_coeffs, k_min, k_max);
         }
 
         return KanNetwork{
@@ -104,6 +108,8 @@ pub const KanNetwork = struct {
             try writer.writeInt(u32, @intCast(layer.in_dim), .little);
             try writer.writeInt(u32, @intCast(layer.out_dim), .little);
             try writer.writeInt(u32, @intCast(layer.num_coeffs), .little);
+            try writer.writeInt(u32, @bitCast(layer.knot_min), .little);
+            try writer.writeInt(u32, @bitCast(layer.knot_max), .little);
             try writer.writeAll(mem.sliceAsBytes(layer.knots));
             try writer.writeAll(mem.sliceAsBytes(layer.coeffs));
         }
@@ -123,8 +129,10 @@ pub const KanNetwork = struct {
             const in_d = try reader.readInt(u32, .little);
             const out_d = try reader.readInt(u32, .little);
             const n_coeffs = try reader.readInt(u32, .little);
+            const k_min = @as(f32, @bitCast(try reader.readInt(u32, .little)));
+            const k_max = @as(f32, @bitCast(try reader.readInt(u32, .little)));
 
-            layers[i] = try KanLayer.init(allocator, in_d, out_d, n_coeffs);
+            layers[i] = try KanLayer.init(allocator, in_d, out_d, n_coeffs, k_min, k_max);
             _ = try reader.readAll(mem.sliceAsBytes(layers[i].knots));
             _ = try reader.readAll(mem.sliceAsBytes(layers[i].coeffs));
         }

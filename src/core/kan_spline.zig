@@ -77,16 +77,24 @@ pub fn derivativeAllSimd(u_vec: @Vector(16, f32), inv_h: f32) [4]@Vector(16, f32
 }
 
 /// Fast approximate exponential for activation functions.
-pub fn fast_exp(x: f32) f32 {
+pub fn fast_exp(x_raw: f32) f32 {
+    // Clamp to prevent integer overflow in the trick
+    const x = std.math.clamp(x_raw, -80.0, 80.0);
     // Schraudolph's trick
     const i = @as(i32, @intFromFloat(12102203.0 * x + 1064866805.0));
     return @as(f32, @bitCast(i));
 }
 
 /// Vectorized fast exponential.
-pub fn fast_exp_vec(x_v: @Vector(16, f32)) @Vector(16, f32) {
+pub fn fast_exp_vec(x_v_raw: @Vector(16, f32)) @Vector(16, f32) {
     const V = @Vector(16, f32);
     const VI = @Vector(16, i32);
+    const mins = @as(V, @splat(-80.0));
+    const maxs = @as(V, @splat(80.0));
+    
+    // Manual clamp for SIMD
+    const x_v = @select(f32, x_v_raw < mins, mins, @select(f32, x_v_raw > maxs, maxs, x_v_raw));
+
     const m = @as(V, @splat(12102203.0));
     const b = @as(V, @splat(1064866805.0));
     

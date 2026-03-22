@@ -1,0 +1,73 @@
+#version 450
+layout(local_size_x = 256) in;
+
+struct Triangle {
+    vec4 v0, v1, v2, unused;
+};
+
+struct PointSample {
+    float u, v, z_zero, sdf, r, g, b, roughness, metallic;
+};
+
+struct RayQuery {
+    vec4 origin;
+    vec4 direction;
+};
+
+layout(set = 0, binding = 0) buffer Triangles { Triangle tris[]; };
+layout(set = 0, binding = 1) buffer Queries { RayQuery queries[]; };
+layout(set = 0, binding = 2) buffer Samples { PointSample samples[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint tri_count;
+    uint query_count;
+} settings;
+
+// Moller-Trumbore intersection algorithm
+float rayTriangleIntersect(vec3 orig, vec3 dir, vec3 v0, vec3 v1, vec3 v2) {
+    vec3 edge1 = v1 - v0;
+    vec3 edge2 = v2 - v0;
+    vec3 pvec = cross(dir, edge2);
+    float det = dot(edge1, pvec);
+
+    if (det > -1e-6 && det < 1e-6) return 1e20;
+    float inv_det = 1.0 / det;
+
+    vec3 tvec = orig - v0;
+    float u = dot(tvec, pvec) * inv_det;
+    if (u < 0.0 || u > 1.0) return 1e20;
+
+    vec3 qvec = cross(tvec, edge1);
+    float v = dot(dir, qvec) * inv_det;
+    if (v < 0.0 || u + v > 1.0) return 1e20;
+
+    float t = dot(edge2, qvec) * inv_det;
+    if (t < 0.0) return 1e20;
+    return t;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= settings.query_count) return;
+
+    vec3 orig = queries[idx].origin.xyz;
+    vec3 dir = queries[idx].direction.xyz;
+
+    float min_t = 1e20;
+
+    // Brute force intersection for now
+    // Optimization: In a real high-poly scenario, we'd use a BVH.
+    // For 70k triangles, this should still be ~100x faster than single-threaded CPU.
+    for (uint i = 0; i < settings.tri_count; i++) {
+        float t = rayTriangleIntersect(orig, dir, tris[i].v0.xyz, tris[i].v1.xyz, tris[i].v2.xyz);
+        if (t < min_t) {
+            min_t = t;
+        }
+    }
+
+    if (min_t < 1e19) {
+        samples[idx].sdf = min_t;
+    } else {
+        samples[idx].sdf = 0.0;
+    }
+}

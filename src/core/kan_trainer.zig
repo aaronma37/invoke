@@ -234,14 +234,16 @@ pub const KanTrainer = struct {
         @memset(out_grad_soa, 0.0);
 
         var loss_acc: f32 = 0.0;
+        const inv_batch = 1.0 / @as(f32, @floatFromInt(batch_size));
         for (0..out_dim) |d| {
             const pred_row = final_acts_soa[d * batch_size .. (d + 1) * batch_size];
             const target_row = global_targets_soa[d * total_batch + task.start_idx .. d * total_batch + task.end_idx];
-            const weight = if (task.trainer.task_type == .sdf) (if (d == 0) task.trainer.lambda_shape else 1.0) else 1.0;
             
             for (0..batch_size) |b| {
-                const diff = pred_row[b] - target_row[b];
-                loss_acc += 0.5 * weight * diff * diff;
+                const target = target_row[b];
+                const weight = if (target == 0.0) task.trainer.lambda_shape else 1.0;
+                const diff = pred_row[b] - target;
+                loss_acc += 0.5 * weight * diff * diff * inv_batch;
                 out_grad_soa[d * batch_size + b] = weight * diff;
             }
         }
