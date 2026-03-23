@@ -51,21 +51,33 @@ public class DatasetGenerator : EditorWindow
                 for (int b = 0; b < smr.sharedMesh.blendShapeCount; b++) smr.SetBlendShapeWeight(b, 0);
             }
 
-            // Randomize ONLY Bust Size (0.0 to 1.5 range)
-            float bustVal = (i == 0) ? 0.0f : Random.Range(0.0f, 1.5f);
+            // Randomize Bust Size (-1.0 to 1.5 range)
+            // -1.0 = Flat/Small, 0.0 = Neutral, 1.5 = Large
+            float bustVal = (i == 0) ? 0.0f : Random.Range(-1.0f, 1.5f);
             
             // Apply BlendShapes
             foreach (var smr in allSmrs) {
                 for (int b = 0; b < smr.sharedMesh.blendShapeCount; b++) {
                     string name = smr.sharedMesh.GetBlendShapeName(b).ToLower();
-                    if (name.Contains("bust_size") || name.Contains("breast_size")) {
-                        smr.SetBlendShapeWeight(b, Mathf.Clamp(bustVal * 100.0f, 0, 100.0f));
+                    
+                    if (bustVal >= 0) {
+                        // Expansion logic
+                        if (name.Contains("bust_size") || name.Contains("breast_size")) {
+                            smr.SetBlendShapeWeight(b, Mathf.Clamp(bustVal * 100.0f, 0, 100.0f));
+                        }
+                    } else {
+                        // Compression logic (Negative values)
+                        if (name.Contains("small") || name.Contains("flat") || name.Contains("breast_size_down")) {
+                            smr.SetBlendShapeWeight(b, Mathf.Clamp(-bustVal * 100.0f, 0, 100.0f));
+                        }
                     }
                 }
             }
             
-            // Apply Bone Scaling (Extra depth for values > 1.0)
-            float boneScale = 1.0f + (bustVal * 0.6f);
+            // Apply Bone Scaling
+            // For positive: scale up (1.0 to 1.9)
+            // For negative: scale down (1.0 to 0.5)
+            float boneScale = (bustVal >= 0) ? 1.0f + (bustVal * 0.6f) : 1.0f + (bustVal * 0.5f);
             foreach (Transform t in instance.GetComponentsInChildren<Transform>()) {
                 if (t.name.ToLower().Contains("bust") || t.name.ToLower().Contains("breast")) {
                     t.localScale = new Vector3(boneScale, boneScale, boneScale);

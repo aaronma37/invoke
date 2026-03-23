@@ -145,11 +145,11 @@ function M.update()
         end
     end
 
-    slider("Waist/Hip", 0, -1, 1)
-    slider("Shoulder", 1, -1, 1)
-    slider("Chest Depth", 2, -1, 1)
+    slider("Waist/Hip", 0, -2, 2)
+    slider("Shoulder", 1, -2, 2)
+    slider("Chest Depth", 2, -2, 2)
     slider("Arm Length", 3, 0, 1.5)
-    slider("Bust Size", 4, 0, 1.5)
+    slider("Bust Size", 4, -1.0, 1.5)
     
     imgui.gui.igEnd()
 

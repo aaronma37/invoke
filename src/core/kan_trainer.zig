@@ -245,7 +245,7 @@ pub const KanTrainer = struct {
                 
                 // --- DISPLACEMENT GATE ---
                 // If the target is tiny, it's likely jitter or noise. Force to zero.
-                const is_static = @abs(target) < 0.001;
+                const is_static = @abs(target) < 0.0001;
                 if (is_static) target = 0.0;
 
                 const weight = if (is_static) task.trainer.lambda_shape else 1.0;
