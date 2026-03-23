@@ -127,6 +127,8 @@ pub const KanTrainer = struct {
     task_type: TaskType = .sdf,
     lambda_shape: f32 = 1.0,
     lambda_l2: f32 = 0.0001,
+    lambda_anchor: f32 = 100.0, // High penalty for moving the anchor
+    anchor_input: ?[]const f32 = null,
 
     pub fn initFixed(allocator: mem.Allocator, layer_dims: []const usize, num_coeffs: usize, max_chunk_size: usize, task: TaskType) !*KanTrainer {
         return initWithThreads(allocator, layer_dims, num_coeffs, max_chunk_size, task, 16);
@@ -247,6 +249,33 @@ pub const KanTrainer = struct {
             }
         }
         task.local_loss.* = loss_acc;
+
+        // --- Hard Anchor Constraint ---
+        // If an anchor_input is set, we force displacement at that UV to be zero.
+        // We use the latents from the first sample in this chunk for the anchor check.
+        if (task.trainer.anchor_input) |anchor_uv| {
+            const chunk_anchor_in = local_activations[0][0..in_dim];
+            @memcpy(chunk_anchor_in[0..2], anchor_uv[0..2]);
+            if (in_dim > 2) {
+                // Copy latents from the first sample in the batch
+                @memcpy(chunk_anchor_in[2..in_dim], local_activations[0][in_dim..in_dim*2 - (in_dim-2)]); // Wait, simpler:
+                @memcpy(chunk_anchor_in[2..in_dim], input_src[2..in_dim]);
+            }
+            
+            net.forward(chunk_anchor_in, local_activations[0..net.layers.len+1], 1);
+            
+            const anchor_pred = local_activations[net.layers.len][0..out_dim];
+            const anchor_grad = state.out_grad[0..out_dim];
+            
+            for (0..out_dim) |d| {
+                const diff = anchor_pred[d]; 
+                task.local_loss.* += 0.5 * task.trainer.lambda_anchor * diff * diff * inv_total_batch;
+                anchor_grad[d] = task.trainer.lambda_anchor * diff;
+            }
+            
+            const const_activations = @as([][]const f32, @ptrCast(local_activations[0..net.layers.len+1]));
+            net.backward(const_activations, anchor_grad, state.coeff_grads, local_scratch[0..net.layers.len], 1, state.bucket_scratch);
+        }
 
         const const_activations = @as([][]const f32, @ptrCast(local_activations[0..net.layers.len+1]));
         net.backward(const_activations, out_grad, state.coeff_grads, local_scratch[0..net.layers.len], batch_size, state.bucket_scratch);

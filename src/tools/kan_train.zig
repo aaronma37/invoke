@@ -67,7 +67,7 @@ pub fn main() !void {
 
         const latent_dim = loader.models[0].label.len;
         const total_in = 2 + latent_dim;
-        const dims = [_]usize{ total_in, 64, 64, 3 };
+        const dims = [_]usize{ total_in, 128, 3 };
         
         try runTraining(allocator, loader, &dims, epochs, batch_size, lr, model_path, task);
     } else {
@@ -100,6 +100,22 @@ fn runTraining(allocator: mem.Allocator, loader: anytype, dims: []const usize, e
     }
     defer trainer.deinit();
     
+    // Setup Hard Anchor Constraint (Displacement Task Only)
+    if (task == .displacement) {
+        const anchor_uv = try allocator.alloc(f32, 2);
+        // Extract Vertex 0 UV from the first model
+        if (@TypeOf(loader) == DataLoader) {
+            anchor_uv[0] = loader.samples[0].x;
+            anchor_uv[1] = loader.samples[0].y;
+        } else {
+            anchor_uv[0] = loader.models[0].samples[0].x;
+            anchor_uv[1] = loader.models[0].samples[0].y;
+        }
+        trainer.anchor_input = anchor_uv;
+        trainer.lambda_anchor = 500.0; // Extremely high penalty
+        std.debug.print("Anchor Constraint Active: UV=({d:0.4}, {d:0.4})\n", .{anchor_uv[0], anchor_uv[1]});
+    }
+
     trainer.lambda_shape = 10.0;
     trainer.optimizer.learning_rate = lr;
 

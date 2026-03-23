@@ -23,3 +23,6 @@ projects/imgui/build/
 
 # Python Virtual Environment
 venv/
+
+# Artifacts
+artifacts/datasets/vroid_batch_pcb/*

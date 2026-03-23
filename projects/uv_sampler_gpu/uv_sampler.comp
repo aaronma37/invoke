@@ -9,74 +9,77 @@ struct PointSample {
     float u, v, z_zero, sdf, r, g, b, roughness, metallic;
 };
 
-struct RayQuery {
-    vec4 origin;
-    vec4 direction;
-};
-
-layout(set = 0, binding = 0) buffer Triangles { Triangle tris[]; };
-layout(set = 0, binding = 1) buffer Queries { RayQuery queries[]; };
-layout(set = 0, binding = 2) buffer Samples { PointSample samples[]; };
-
 layout(push_constant) uniform PushConstants {
-    uint tri_count;
-    uint query_count;
-} settings;
+    uint target_tri_count;
+    uint base_vert_count;
+} pc;
 
-// Moller-Trumbore intersection algorithm
-float rayTriangleIntersect(vec3 orig, vec3 dir, vec3 v0, vec3 v1, vec3 v2) {
+layout(std430, binding = 0) buffer TargetTriangles { Triangle target_tris[]; };
+layout(std430, binding = 1) buffer BaseVertices { vec4 base_pos[]; };
+layout(std430, binding = 2) buffer BaseNormals { vec4 base_norms[]; };
+layout(std430, binding = 3) buffer BaseUVs { vec2 base_uvs[]; };
+layout(std430, binding = 4) buffer OutSamples { PointSample samples[]; };
+
+bool intersectTriangle(vec3 orig, vec3 dir, Triangle tri, out float t, out float u, out float v) {
+    vec3 v0 = tri.v0.xyz;
+    vec3 v1 = tri.v1.xyz;
+    vec3 v2 = tri.v2.xyz;
     vec3 edge1 = v1 - v0;
     vec3 edge2 = v2 - v0;
     vec3 pvec = cross(dir, edge2);
     float det = dot(edge1, pvec);
 
-    if (det > -1e-6 && det < 1e-6) return 1e20;
-    float inv_det = 1.0 / det;
-
+    // Allow hits from both sides for displacement sampling
+    if (abs(det) < 1e-8) return false;
+    float invDet = 1.0 / det;
     vec3 tvec = orig - v0;
-    float u = dot(tvec, pvec) * inv_det;
-    if (u < 0.0 || u > 1.0) return 1e20;
-
+    u = dot(tvec, pvec) * invDet;
+    if (u < 0.0 || u > 1.0) return false;
     vec3 qvec = cross(tvec, edge1);
-    float v = dot(dir, qvec) * inv_det;
-    if (v < 0.0 || u + v > 1.0) return 1e20;
-
-    float t = dot(edge2, qvec) * inv_det;
-    if (t < 0.0) return 1e20;
-    return t;
+    v = dot(dir, qvec) * invDet;
+    if (v < 0.0 || u + v > 1.0) return false;
+    t = dot(edge2, qvec) * invDet;
+    return true;
 }
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx >= settings.query_count) return;
+    if (idx >= pc.base_vert_count) return;
 
-    vec3 base_pos = queries[idx].origin.xyz;
-    vec3 dir = queries[idx].direction.xyz;
+    vec3 origin = base_pos[idx].xyz;
+    vec3 dir = normalize(base_norms[idx].xyz);
     
-    // Shoot both ways to find closest surface
-    float offset = 0.1; // Reduced from 0.5 to prevent hitting distant body parts
-    vec3 orig_back = base_pos - dir * offset;
-    
-    float min_abs_t = 1e20;
-    float best_t = 0.0;
+    float min_t = 1e30;
+    bool hit = false;
+    vec3 hit_pos = vec3(0);
 
-    for (uint i = 0; i < settings.tri_count; i++) {
-        float t = rayTriangleIntersect(orig_back, dir, tris[i].v0.xyz, tris[i].v1.xyz, tris[i].v2.xyz);
-        if (t < 1e19) {
-            float dist_from_base = t - offset;
-            // Only accept hits within a reasonable range (e.g., 10cm for VRoid)
-            if (abs(dist_from_base) < 0.1) { 
-                if (abs(dist_from_base) < min_abs_t) {
-                    min_abs_t = abs(dist_from_base);
-                    best_t = dist_from_base;
-                }
+    for (uint i = 0; i < pc.target_tri_count; i++) {
+        float t, u, v;
+        // Test Forward
+        if (intersectTriangle(origin, dir, target_tris[i], t, u, v)) {
+            if (t > 0.0 && t < min_t) {
+                min_t = t;
+                hit = true;
+                hit_pos = origin + dir * t;
+            }
+        }
+        // Test Backward (for shrinking/hollow morphs)
+        if (intersectTriangle(origin, -dir, target_tris[i], t, u, v)) {
+            if (t > 0.0 && t < min_t) {
+                min_t = t;
+                hit = true;
+                hit_pos = origin - dir * t;
             }
         }
     }
 
-    if (min_abs_t < 1e19) {
-        samples[idx].sdf = best_t;
-        vec3 displacement = dir * best_t;
+    samples[idx].u = base_uvs[idx].x;
+    samples[idx].v = base_uvs[idx].y;
+    samples[idx].z_zero = 0.0;
+
+    if (hit) {
+        vec3 displacement = hit_pos - origin;
+        samples[idx].sdf = length(displacement) * (dot(displacement, dir) > 0.0 ? 1.0 : -1.0);
         samples[idx].r = displacement.x;
         samples[idx].g = displacement.y;
         samples[idx].b = displacement.z;

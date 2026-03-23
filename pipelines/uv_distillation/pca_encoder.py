@@ -7,12 +7,10 @@ from sklearn.decomposition import PCA
 import json
 
 def load_pcb_displacement(path):
-    # PointSample: x,y,z, sdf, r,g,b, rough, metal (9 floats)
-    # Our displacement vector (dx, dy, dz) is in r, g, b (indices 4, 5, 6)
     data = np.fromfile(path, dtype=np.float32).reshape(-1, 9)
-    return data[:, 4:7].flatten() # Returns [dx0, dy0, dz0, dx1, dy1, dz1, ...]
+    return data[:, 4:7].flatten()
 
-def run_pca(dataset_dir, n_components=16):
+def run_pca(dataset_dir, n_components=8):
     files = sorted(glob.glob(os.path.join(dataset_dir, "vroid_*.pcb")))
     if not files:
         print(f"No .pcb files found in {dataset_dir}")
@@ -20,36 +18,32 @@ def run_pca(dataset_dir, n_components=16):
 
     print(f"PCA Encoder: Loading {len(files)} models...")
     
-    # Pre-allocate matrix [Num_Models, Num_Vertices * 3]
-    first_model = load_pcb_displacement(files[0])
-    feature_count = len(first_model)
-    matrix = np.zeros((len(files), feature_count), dtype=np.float32)
-    
-    matrix[0] = first_model
-    for i in range(1, len(files)):
-        matrix[i] = load_pcb_displacement(files[i])
-        if i % 50 == 0:
-            print(f"  Loaded {i}/{len(files)}...")
+    matrix = []
+    for f in files:
+        matrix.append(load_pcb_displacement(f))
+    matrix = np.array(matrix)
 
     print(f"Computing PCA (Target: {n_components} sliders)...")
+    
+    # Standardize: Find the variation RELATIVE to the neutral model
+    # Neutral is index 0 (vroid_0000)
+    neutral_displacement = matrix[0]
+    relative_matrix = matrix - neutral_displacement
+    
     pca = PCA(n_components=n_components)
-    latents = pca.fit_transform(matrix)
+    latents = pca.fit_transform(relative_matrix)
     
-    # Normalize latents to [0, 1] for KAN compatibility
-    latents_min = latents.min(axis=0)
-    latents_max = latents.max(axis=0)
+    # FORCE vroid_0000 to be exactly zero
+    neutral_latent = latents[0].copy()
+    latents = latents - neutral_latent
     
-    # Avoid division by zero
-    range_vals = latents_max - latents_min
-    range_vals[range_vals == 0] = 1.0 
-    
-    latents_norm = (latents - latents_min) / range_vals
+    # Normalize to [-1, 1] range based on the maximum absolute value found
+    max_abs = np.max(np.abs(latents))
+    if max_abs > 1e-8:
+        latents_norm = latents / max_abs
+    else:
+        latents_norm = latents
 
-    # Explained variance tells us how much "Human Information" we captured
-    variance = np.sum(pca.explained_variance_ratio_)
-    print(f"PCA Complete! 16 sliders capture {variance*100:.2f}% of the total body variation.")
-
-    # Save the latents (labels for our KAN training)
     output_data = {}
     for i, file in enumerate(files):
         name = os.path.basename(file).replace(".pcb", "")
@@ -59,6 +53,11 @@ def run_pca(dataset_dir, n_components=16):
         json.dump(output_data, f)
     
     print("Saved slider data to artifacts/datasets/vroid_latents.json")
+    print(f"Neutral Model (vroid_0000) Latents: {output_data['vroid_0000']}")
+    
+    # Check if any slider is just a global constant
+    variances = np.var(latents_norm, axis=0)
+    print(f"Slider Variances: {variances}")
 
 if __name__ == "__main__":
     run_pca(sys.argv[1])
