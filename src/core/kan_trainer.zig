@@ -241,8 +241,14 @@ pub const KanTrainer = struct {
         for (0..batch_size) |b| {
             for (0..out_dim) |d| {
                 const pred = final_acts[b * out_dim + d];
-                const target = target_chunk[b * out_dim + d];
-                const weight = if (target == 0.0) task.trainer.lambda_shape else 1.0;
+                var target = target_chunk[b * out_dim + d];
+                
+                // --- DISPLACEMENT GATE ---
+                // If the target is tiny, it's likely jitter or noise. Force to zero.
+                const is_static = @abs(target) < 0.001;
+                if (is_static) target = 0.0;
+
+                const weight = if (is_static) task.trainer.lambda_shape else 1.0;
                 const diff = pred - target;
                 loss_acc += 0.5 * weight * diff * diff * inv_total_batch;
                 out_grad[b * out_dim + d] = weight * diff;

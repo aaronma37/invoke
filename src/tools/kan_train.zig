@@ -115,7 +115,8 @@ pub fn main() !void {
         std.debug.print("Anchor Constraint Active: UV=({d:0.4}, {d:0.4})\n", .{anchor_uv[0], anchor_uv[1]});
     }
 
-    trainer.lambda_shape = 10.0;
+    trainer.lambda_shape = 50.0; // 5x more pinning force
+    trainer.lambda_l2 = 0.001; // Smooth out ripples
     trainer.optimizer.learning_rate = lr;
 
     const inputs = try allocator.alloc(f32, batch_size * dims[0]);
