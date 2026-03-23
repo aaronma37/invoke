@@ -139,7 +139,12 @@ pub fn main() !void {
         f_idx += chunk_faces;
     }
 
-    // 4. Compute Face Normals
+    // 4. Compute Smoothed Vertex Normals
+    const vertex_normals = try allocator.alloc(Vec3, base_positions.items.len);
+    defer allocator.free(vertex_normals);
+    @memset(vertex_normals, Vec3{ .x = 0, .y = 0, .z = 0 });
+
+    // Accumulate face normals into vertices
     for (0..base_faces.items.len) |i| {
         const v0 = out_verts[i * 3 + 0];
         const v1 = out_verts[i * 3 + 1];
@@ -148,9 +153,15 @@ pub fn main() !void {
         const edge2 = v2.sub(v0);
         const face_norm = edge1.cross(edge2).normalize();
         
-        out_norms[i * 3 + 0] = face_norm;
-        out_norms[i * 3 + 1] = face_norm;
-        out_norms[i * 3 + 2] = face_norm;
+        const face = base_faces.items[i];
+        vertex_normals[face.v_idx[0]] = vertex_normals[face.v_idx[0]].add(face_norm);
+        vertex_normals[face.v_idx[1]] = vertex_normals[face.v_idx[1]].add(face_norm);
+        vertex_normals[face.v_idx[2]] = vertex_normals[face.v_idx[2]].add(face_norm);
+    }
+
+    // Normalize accumulated vertex normals
+    for (0..vertex_normals.len) |i| {
+        vertex_normals[i] = vertex_normals[i].normalize();
     }
 
     // 5. Save OBJ
@@ -158,16 +169,43 @@ pub fn main() !void {
     defer out_file.close();
     var writer = out_file.writer();
 
-    try writer.print("# Moontide KAN Reconstructed Mesh (Triangle Corner Split)\n", .{});
-    for (out_verts) |v| try writer.print("v {d:0.6} {d:0.6} {d:0.6}\n", .{v.x, v.y, v.z});
-    for (out_uvs) |uv| try writer.print("vt {d:0.6} {d:0.6}\n", .{uv.u, uv.v});
-    for (out_norms) |n| try writer.print("vn {d:0.6} {d:0.6} {d:0.6}\n", .{n.x, n.y, n.z});
+    try writer.print("# Moontide KAN Reconstructed Mesh (Smooth Shaded)\n", .{});
+    
+    // Per-vertex activations for querying
+    const query_activations = try allocator.alloc([]f32, net.layers.len + 1);
+    defer allocator.free(query_activations);
+    for (0..net.layers.len) |i| query_activations[i] = try allocator.alloc(f32, net.layers[i].in_dim);
+    query_activations[net.layers.len] = try allocator.alloc(f32, net.out_dim);
+    defer for (query_activations) |a| allocator.free(a);
+
+    // We export unique vertices from base positions + their smoothed normals
+    for (0..base_positions.items.len) |i| {
+        const v = base_positions.items[i];
+        
+        // Populate input
+        query_activations[0][0] = base_uvs.items[i].u;
+        query_activations[0][1] = base_uvs.items[i].v;
+        
+        net.forward(query_activations[0], query_activations, 1);
+        
+        const disp = query_activations[net.layers.len];
+        try writer.print("v {d:0.6} {d:0.6} {d:0.6}\n", .{ v.x + disp[0], v.y + disp[1], v.z + disp[2] });
+    }
+    for (vertex_normals) |n| try writer.print("vn {d:0.6} {d:0.6} {d:0.6}\n", .{ n.x, n.y, n.z });
+    
+    // Corner-based UVs still need per-triangle export
+    for (out_uvs) |uv| try writer.print("vt {d:0.6} {d:0.6}\n", .{ uv.u, uv.v });
 
     for (0..base_faces.items.len) |i| {
-        const v1 = i * 3 + 1;
-        const v2 = i * 3 + 2;
-        const v3 = i * 3 + 3;
-        try writer.print("f {d}/{d}/{d} {d}/{d}/{d} {d}/{d}/{d}\n", .{ v1, v1, v1, v2, v2, v2, v3, v3, v3 });
+        const face = base_faces.items[i];
+        const v1 = face.v_idx[0] + 1;
+        const v2 = face.v_idx[1] + 1;
+        const v3 = face.v_idx[2] + 1;
+        // UVs are still 1:1 with triangle corners (3 per face)
+        const uv1 = i * 3 + 1;
+        const uv2 = i * 3 + 2;
+        const uv3 = i * 3 + 3;
+        try writer.print("f {d}/{d}/{d} {d}/{d}/{d} {d}/{d}/{d}\n", .{ v1, uv1, v1, v2, uv2, v2, v3, uv3, v3 });
     }
 
     std.debug.print("Saved Reconstruction to {s}\n", .{out_path});

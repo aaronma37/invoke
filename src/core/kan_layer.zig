@@ -64,7 +64,7 @@ pub const KanLayer = struct {
         const vec_len = 16;
         const V = @Vector(vec_len, f32);
         
-        const MAX_VECS = 4;
+        const MAX_VECS = 16;
         const num_vecs = (self.out_dim + vec_len - 1) / vec_len;
         
         std.debug.assert(self.in_dim <= 128);
@@ -145,7 +145,7 @@ pub const KanLayer = struct {
         const vec_len = 16;
         const V = @Vector(vec_len, f32);
         
-        const MAX_VECS = 4;
+        const MAX_VECS = 16;
         const num_vecs = (self.out_dim + vec_len - 1) / vec_len;
 
         std.debug.assert(self.in_dim <= 128);

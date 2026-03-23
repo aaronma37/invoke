@@ -75,8 +75,8 @@ pub fn main() !void {
         var loader = try DataLoader.init(allocator, pcb_path);
         defer loader.deinit();
 
-        const dims_sdf = [_]usize{ 3, 32, 32, 1 };
-        const dims_disp = [_]usize{ 2, 64, 3 };
+        const dims_sdf = [_]usize{ 3, 64, 64, 1 };
+        const dims_disp = [_]usize{ 2, 128, 3 };
         const dims: []const usize = if (task == .sdf) &dims_sdf else &dims_disp;
         
         try runTraining(allocator, loader, dims, epochs, batch_size, lr, model_path, task);
@@ -84,7 +84,7 @@ pub fn main() !void {
 }
 
 fn runTraining(allocator: mem.Allocator, loader: anytype, dims: []const usize, epochs: usize, batch_size: usize, lr: f32, model_path: []const u8, task: kan.kan_trainer.TaskType) !void {
-    const num_coeffs = 8;
+    const num_coeffs = 24;
     
     // Resume if model exists, otherwise init fresh
     var trainer: *KanTrainer = undefined;
