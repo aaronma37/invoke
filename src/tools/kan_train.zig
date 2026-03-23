@@ -126,11 +126,15 @@ pub fn main() !void {
     var prng = std.Random.DefaultPrng.init(@as(u64, @intCast(std.time.timestamp())));
     var best_loss: f32 = 1e10;
 
-    std.debug.print("Starting training for {d} epochs (batch size: {d}, lr: {d:0.5})...\n", .{epochs, batch_size, lr});
-    
+    std.debug.print("Starting training for {d} epochs (batch size: {d})...\n", .{epochs, batch_size});
+
     for (0..epochs) |epoch| {
-        loader.getBatch(batch_size, dims[0], dims[dims.len-1], &prng, inputs, targets);
-        const batch = TrainingBatch{ .inputs = inputs, .targets = targets, .batch_size = batch_size };
+        // --- COSINE LR DECAY ---
+        const progress = @as(f32, @floatFromInt(epoch)) / @as(f32, @floatFromInt(epochs));
+        const current_lr = 0.0001 + 0.5 * (lr - 0.0001) * (1.0 + @cos(progress * std.math.pi));
+        trainer.optimizer.learning_rate = current_lr;
+
+        loader.getBatch(batch_size, dims[0], dims[dims.len-1], &prng, inputs, targets);        const batch = TrainingBatch{ .inputs = inputs, .targets = targets, .batch_size = batch_size };
         const loss = try trainer.trainStep(batch);
         
         if (epoch % 100 == 0 or epoch == epochs - 1) {

@@ -1,27 +1,27 @@
 const std = @import("std");
 const mem = std.mem;
-const fs = std.fs;
-const kan_trainer = @import("kan_trainer.zig");
-const TrainingBatch = kan_trainer.TrainingBatch;
 
-pub const PointSample = extern struct {
+pub const PointSample = struct {
     x: f32, y: f32, z: f32,
     sdf: f32,
     r: f32, g: f32, b: f32,
-    roughness: f32,
-    metallic: f32,
+    roughness: f32, metallic: f32,
 };
 
 pub const DataLoader = struct {
-    file: fs.File,
+    file: std.fs.File,
     samples: []const PointSample,
     allocator: mem.Allocator,
 
     pub fn init(allocator: mem.Allocator, path: []const u8) !DataLoader {
-        const file = try fs.cwd().openFile(path, .{});
+        const file = try std.fs.cwd().openFile(path, .{});
         const stat = try file.stat();
         const ptr = try std.posix.mmap(null, stat.size, std.posix.PROT.READ, .{ .TYPE = .SHARED }, file.handle, 0);
-        return DataLoader{ .file = file, .samples = mem.bytesAsSlice(PointSample, ptr), .allocator = allocator };
+        return DataLoader{
+            .file = file,
+            .samples = mem.bytesAsSlice(PointSample, ptr),
+            .allocator = allocator,
+        };
     }
 
     pub fn deinit(self: *DataLoader) void {
@@ -31,71 +31,52 @@ pub const DataLoader = struct {
 
     pub fn getBatch(self: DataLoader, batch_size: usize, in_dim: usize, out_dim: usize, prng: *std.Random.DefaultPrng, inputs: []f32, targets: []f32) void {
         const rand = prng.random();
-        for (0..batch_size) |b| {
+        for (0..batch_size) |i| {
             const s = self.samples[rand.uintLessThan(usize, self.samples.len)];
-            
-            // Map inputs to AoS: [batch][dim]
             if (in_dim == 3) {
-                inputs[b * 3 + 0] = s.x;
-                inputs[b * 3 + 1] = s.y;
-                inputs[b * 3 + 2] = s.z;
-            } else if (in_dim == 2) {
-                inputs[b * 2 + 0] = s.x; // maps to u
-                inputs[b * 2 + 1] = s.y; // maps to v
-            }
-            
-            // Map targets to AoS: [batch][dim]
-            if (in_dim == 2 and out_dim == 3) {
-                // VECTOR DISPLACEMENT: UV -> (DX, DY, DZ)
-                targets[b * 3 + 0] = s.r;
-                targets[b * 3 + 1] = s.g;
-                targets[b * 3 + 2] = s.b;
+                inputs[i * 3 + 0] = s.x;
+                inputs[i * 3 + 1] = s.y;
+                inputs[i * 3 + 2] = s.z;
             } else {
-                if (out_dim >= 1) targets[b * out_dim + 0] = s.sdf;
-                if (out_dim >= 2) targets[b * out_dim + 1] = s.r;
-                if (out_dim >= 3) targets[b * out_dim + 2] = s.g;
-                if (out_dim >= 4) targets[b * out_dim + 3] = s.b;
-                if (out_dim >= 5) targets[b * out_dim + 4] = s.roughness;
-                if (out_dim >= 6) targets[b * out_dim + 5] = s.metallic;
+                inputs[i * 2 + 0] = s.x;
+                inputs[i * 2 + 1] = s.y;
+            }
+
+            if (out_dim == 3) {
+                targets[i * 3 + 0] = s.r;
+                targets[i * 3 + 1] = s.g;
+                targets[i * 3 + 2] = s.b;
+            } else {
+                targets[i * out_dim + 0] = s.sdf;
             }
         }
     }
 };
 
-pub const MultiDataLoader = struct {
-    const Model = struct {
-        file: fs.File,
-        samples: []const PointSample,
-        label: []f32,
-    };
+pub const ModelEntry = struct {
+    file: std.fs.File,
+    samples: []const PointSample,
+    label: []f32,
+};
 
-    models: []Model,
+pub const MultiDataLoader = struct {
+    models: []ModelEntry,
     allocator: mem.Allocator,
 
-    pub fn init(allocator: mem.Allocator, pcb_dir_path: []const u8, latents_json_path: []const u8) !MultiDataLoader {
-        // 1. Parse Latents JSON
-        const json_content = try fs.cwd().readFileAlloc(allocator, latents_json_path, 10 * 1024 * 1024);
-        defer allocator.free(json_content);
+    pub fn init(allocator: mem.Allocator, pcb_dir_path: []const u8, latents_path: []const u8) !MultiDataLoader {
+        var dir = try std.fs.cwd().openDir(pcb_dir_path, .{ .iterate = true });
+        defer dir.close();
 
-        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_content, .{});
+        // Load latents JSON
+        const latents_file = try std.fs.cwd().readFileAlloc(allocator, latents_path, 10 * 1024 * 1024);
+        defer allocator.free(latents_file);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, latents_file, .{});
         defer parsed.deinit();
-
         const root = parsed.value.object;
-        
-        // 2. Iterate Directory and Load Models
-        var dir = try fs.cwd().openDir(pcb_dir_path, .{ .iterate = true });
-        var it = dir.iterate();
-        
-        var models_list = std.ArrayList(Model).init(allocator);
-        errdefer {
-            for (models_list.items) |m| {
-                std.posix.munmap(@alignCast(mem.sliceAsBytes(m.samples)));
-                m.file.close();
-                allocator.free(m.label);
-            }
-            models_list.deinit();
-        }
 
+        var models_list = std.ArrayList(ModelEntry).init(allocator);
+
+        var it = dir.iterate();
         while (try it.next()) |entry| {
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".pcb")) {
                 const name_no_ext = entry.name[0 .. entry.name.len - 4];
@@ -140,21 +121,23 @@ pub const MultiDataLoader = struct {
             // Pick a random point in that model
             const s = m.samples[rand.uintLessThan(usize, m.samples.len)];
             
+            // --- SYMMETRY MIRRORING ---
+            // Torso centerline is at U=0.5
+            const mirror = rand.boolean();
+            const u = if (mirror) 1.0 - s.x else s.x;
+            const dx = if (mirror) -s.r else s.r; // Mirror the X displacement
+
             // Input: [U, V, Latents...]
-            inputs[b * in_dim + 0] = s.x; // U
+            inputs[b * in_dim + 0] = u;
             inputs[b * in_dim + 1] = s.y; // V
             for (0..latent_dim) |i| {
                 inputs[b * in_dim + 2 + i] = m.label[i];
             }
             
             // Output: [dX, dY, dZ]
-            if (out_dim == 3) {
-                targets[b * 3 + 0] = s.r;
-                targets[b * 3 + 1] = s.g;
-                targets[b * 3 + 2] = s.b;
-            } else {
-                targets[b * out_dim + 0] = s.sdf;
-            }
+            targets[b * out_dim + 0] = dx;
+            targets[b * out_dim + 1] = s.g;
+            targets[b * out_dim + 2] = s.b;
         }
     }
 };
