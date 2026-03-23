@@ -169,3 +169,64 @@ pub const ExtensionManager = struct {
         return error.ExtensionNotFound;
     }
 };
+
+// --- MOONTIDE VAE BRIDGE (FFI) ---
+const kan = @import("kan_network.zig");
+const KanNetwork = kan.KanNetwork;
+
+pub export fn moontide_load_model(path: [*:0]const u8) ?*KanNetwork {
+    const allocator = std.heap.c_allocator;
+    const path_slice = std.mem.span(path);
+    
+    const net = KanNetwork.loadModel(allocator, path_slice) catch return null;
+    const net_ptr = allocator.create(KanNetwork) catch return null;
+    net_ptr.* = net;
+    return net_ptr;
+}
+
+pub export fn moontide_free_model(net: *KanNetwork) void {
+    const allocator = std.heap.c_allocator;
+    net.deinit();
+    allocator.destroy(net);
+}
+
+pub export fn moontide_eval_vae(
+    net: *KanNetwork,
+    num_points: u32,
+    uvs: [*]const f32, // [u, v] pairs
+    latents: [*]const f32, // [z0, z1...]
+    outputs: [*]f32 // [dx, dy, dz] results
+) void {
+    const in_dim = net.layers[0].in_dim;
+    const out_dim = net.out_dim;
+    const latent_dim = in_dim - 2;
+    
+    const allocator = std.heap.c_allocator;
+    
+    var activations = allocator.alloc([]f32, net.layers.len + 1) catch return;
+    defer allocator.free(activations);
+    
+    for (0..net.layers.len) |i| {
+        activations[i] = allocator.alloc(f32, num_points * net.layers[i].in_dim) catch return;
+    }
+    activations[net.layers.len] = allocator.alloc(f32, num_points * out_dim) catch return;
+    defer {
+        for (activations) |a| allocator.free(a);
+    }
+
+    for (0..num_points) |p| {
+        activations[0][p * in_dim + 0] = uvs[p * 2 + 0];
+        activations[0][p * in_dim + 1] = uvs[p * 2 + 1];
+        for (0..latent_dim) |l| {
+            activations[0][p * in_dim + 2 + l] = latents[l];
+        }
+    }
+
+    net.forward(activations[0], activations, num_points);
+
+    for (0..num_points) |p| {
+        outputs[p * 3 + 0] = activations[net.layers.len][p * 3 + 0];
+        outputs[p * 3 + 1] = activations[net.layers.len][p * 3 + 1];
+        outputs[p * 3 + 2] = activations[net.layers.len][p * 3 + 2];
+    }
+}

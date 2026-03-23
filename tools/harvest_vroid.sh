@@ -37,4 +37,7 @@ for f in "$UNITY_PROJECT_DIR/Dataset_Output/"vroid_*.obj; do
     python3 tools/crop_mesh.py "$f" "$OUTPUT_DIR/$base"
 done
 
+echo "Copying Metadata..."
+cp "$UNITY_PROJECT_DIR/Dataset_Output/vroid_metadata.json" "artifacts/datasets/vroid_latents_manual.json"
+
 echo "Post-Processing Complete! Cleaned models are in $OUTPUT_DIR"

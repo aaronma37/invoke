@@ -66,25 +66,24 @@ pub fn main() !void {
         defer loader.deinit();
 
         const latent_dim = loader.models[0].label.len;
-        const total_in = 2 + latent_dim;
-        const dims = [_]usize{ total_in, 128, 3 };
+        const dims_disp = [_]usize{ 2 + latent_dim, 256, 3 };
         
-        try runTraining(allocator, loader, &dims, epochs, batch_size, lr, model_path, task);
-    } else {
+        try runTraining(allocator, loader, &dims_disp, epochs, batch_size, lr, model_path, task);
+        } else {
         std.debug.print("Loading dataset: {s}...\n", .{pcb_path});
         var loader = try DataLoader.init(allocator, pcb_path);
         defer loader.deinit();
 
         const dims_sdf = [_]usize{ 3, 64, 64, 1 };
-        const dims_disp = [_]usize{ 2, 128, 3 };
+        const dims_disp = [_]usize{ 2, 256, 3 };
         const dims: []const usize = if (task == .sdf) &dims_sdf else &dims_disp;
-        
-        try runTraining(allocator, loader, dims, epochs, batch_size, lr, model_path, task);
-    }
-}
 
-fn runTraining(allocator: mem.Allocator, loader: anytype, dims: []const usize, epochs: usize, batch_size: usize, lr: f32, model_path: []const u8, task: kan.kan_trainer.TaskType) !void {
-    const num_coeffs = 24;
+        try runTraining(allocator, loader, dims, epochs, batch_size, lr, model_path, task);
+        }
+        }
+
+        fn runTraining(allocator: mem.Allocator, loader: anytype, dims: []const usize, epochs: usize, batch_size: usize, lr: f32, model_path: []const u8, task: kan.kan_trainer.TaskType) !void {
+        const num_coeffs = 32;
     
     // Resume if model exists, otherwise init fresh
     var trainer: *KanTrainer = undefined;

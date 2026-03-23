@@ -258,7 +258,6 @@ pub const KanTrainer = struct {
             @memcpy(chunk_anchor_in[0..2], anchor_uv[0..2]);
             if (in_dim > 2) {
                 // Copy latents from the first sample in the batch
-                @memcpy(chunk_anchor_in[2..in_dim], local_activations[0][in_dim..in_dim*2 - (in_dim-2)]); // Wait, simpler:
                 @memcpy(chunk_anchor_in[2..in_dim], input_src[2..in_dim]);
             }
             

@@ -67,13 +67,13 @@ pub const KanLayer = struct {
         const MAX_VECS = 16;
         const num_vecs = (self.out_dim + vec_len - 1) / vec_len;
         
-        std.debug.assert(self.in_dim <= 128);
+        std.debug.assert(self.in_dim <= 512);
 
         for (0..batch_size) |b| {
             // --- PASS 1: PRECALCULATE MATH ---
-            var silu_buf: [128]f32 = undefined;
-            var k_base_buf: [128]usize = undefined;
-            var b_vals_buf: [128][4]f32 = undefined;
+            var silu_buf: [512]f32 = undefined;
+            var k_base_buf: [512]usize = undefined;
+            var b_vals_buf: [512][4]f32 = undefined;
 
             for (0..self.in_dim) |i| {
                 const x_raw = inputs[b * self.in_dim + i];
@@ -148,15 +148,15 @@ pub const KanLayer = struct {
         const MAX_VECS = 16;
         const num_vecs = (self.out_dim + vec_len - 1) / vec_len;
 
-        std.debug.assert(self.in_dim <= 128);
+        std.debug.assert(self.in_dim <= 512);
 
         for (0..batch_size) |b| {
-            // --- PASS 1: PRECALCULATE MATH ---
-            var silu_buf: [128]f32 = undefined;
-            var silup_buf: [128]f32 = undefined;
-            var k_base_buf: [128]usize = undefined;
-            var b_vals_buf: [128][4]f32 = undefined;
-            var bp_vals_buf: [128][4]f32 = undefined;
+            // --- PASS 1: PRECALCULATE MATH & GRADIENTS ---
+            var silu_buf: [512]f32 = undefined;
+            var silup_buf: [512]f32 = undefined;
+            var k_base_buf: [512]usize = undefined;
+            var b_vals_buf: [512][4]f32 = undefined;
+            var bp_vals_buf: [512][4]f32 = undefined;
 
             for (0..self.in_dim) |i| {
                 const x_raw = inputs[b * self.in_dim + i];

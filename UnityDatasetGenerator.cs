@@ -12,7 +12,8 @@ public class DatasetGenerator : EditorWindow
     {
         string masterPath = "Assets/MasterModel.vrm"; 
         string outputFolder = "Dataset_Output/";
-        int count = 9; 
+        int count = 100; 
+        Dictionary<string, float[]> metadata = new Dictionary<string, float[]>();
 
         if (!Directory.Exists(outputFolder)) Directory.CreateDirectory(outputFolder);
 
@@ -33,7 +34,7 @@ public class DatasetGenerator : EditorWindow
         instance.transform.localScale = Vector3.one;
         Vector3 baseAnchorPos = GetHipVertexPosition(instance);
 
-        Debug.Log("--- Starting Torso-Focused Dataset Generation ---");
+        Debug.Log($"--- Starting Large-Scale Bust Dataset Generation ({count} samples) ---");
 
         for (int i = 0; i < count; i++)
         {
@@ -41,71 +42,62 @@ public class DatasetGenerator : EditorWindow
             instance.transform.position = Vector3.zero;
             instance.transform.rotation = Quaternion.identity;
 
-            Vector3 identity = Vector3.one;
             // Reset all bones
             foreach (HumanBodyBones bone in System.Enum.GetValues(typeof(HumanBodyBones))) {
                 if (bone == HumanBodyBones.LastBone) continue;
-                SetBoneScale(anim, bone, identity);
+                SetBoneScale(anim, bone, Vector3.one);
             }
-
             foreach (var smr in allSmrs) {
                 for (int b = 0; b < smr.sharedMesh.blendShapeCount; b++) smr.SetBlendShapeWeight(b, 0);
             }
 
-            float shoulderWidth = 1.0f;
-            float waistThickness = 1.0f;
-            float hipWidth = 1.0f;
-            float chestDepth = 1.0f;
-            float armLength = 1.0f;
-
-            if (i == 1) { waistThickness = 1.4f; hipWidth = 1.2f; }
-            if (i == 2) { waistThickness = 0.6f; hipWidth = 0.8f; }
-            if (i == 3) { shoulderWidth = 1.4f; }
-            if (i == 4) { shoulderWidth = 0.6f; }
-            if (i == 5) { chestDepth = 1.4f; }
-            if (i == 6) { chestDepth = 0.6f; }
-            if (i == 7) { armLength = 1.4f; }
-
-            SetBoneScale(anim, HumanBodyBones.Hips, new Vector3(hipWidth, 1.0f, chestDepth));
-            SetBoneScale(anim, HumanBodyBones.Spine, new Vector3(waistThickness, 1.0f, waistThickness));
-            SetBoneScale(anim, HumanBodyBones.UpperChest, new Vector3(shoulderWidth, 1.0f, 1.0f));
-            SetBoneScale(anim, HumanBodyBones.LeftShoulder, new Vector3(shoulderWidth, 1.0f, 1.0f));
-            SetBoneScale(anim, HumanBodyBones.RightShoulder, new Vector3(shoulderWidth, 1.0f, 1.0f));
+            // Randomize ONLY Bust Size (0.0 to 1.5 range)
+            float bustVal = (i == 0) ? 0.0f : Random.Range(0.0f, 1.5f);
             
-            Vector3 armScale = new Vector3(1.0f, armLength, 1.0f);
-            SetBoneScale(anim, HumanBodyBones.LeftUpperArm, armScale);
-            SetBoneScale(anim, HumanBodyBones.RightUpperArm, armScale);
-            SetBoneScale(anim, HumanBodyBones.LeftLowerArm, armScale);
-            SetBoneScale(anim, HumanBodyBones.RightLowerArm, armScale);
-
-            // SAMPLE 8: BIG BUST
-            if (i == 8) {
-                foreach (var smr in allSmrs) {
-                    for (int b = 0; b < smr.sharedMesh.blendShapeCount; b++) {
-                        string name = smr.sharedMesh.GetBlendShapeName(b).ToLower();
-                        if (name.Contains("bust_size") || name.Contains("breast_size")) {
-                            smr.SetBlendShapeWeight(b, 100.0f);
-                        }
+            // Apply BlendShapes
+            foreach (var smr in allSmrs) {
+                for (int b = 0; b < smr.sharedMesh.blendShapeCount; b++) {
+                    string name = smr.sharedMesh.GetBlendShapeName(b).ToLower();
+                    if (name.Contains("bust_size") || name.Contains("breast_size")) {
+                        smr.SetBlendShapeWeight(b, Mathf.Clamp(bustVal * 100.0f, 0, 100.0f));
                     }
                 }
-                
-                // Targeted Bone Scaling: Find specific breast bones in the hierarchy
-                foreach (Transform t in instance.GetComponentsInChildren<Transform>()) {
-                    string name = t.name.ToLower();
-                    // VRoid bones often follow the J_Sec_[L/R]_Bust pattern
-                    if (name.Contains("bust") || name.Contains("breast")) {
-                        t.localScale = new Vector3(1.6f, 1.6f, 1.6f);
-                    }
+            }
+            
+            // Apply Bone Scaling (Extra depth for values > 1.0)
+            float boneScale = 1.0f + (bustVal * 0.6f);
+            foreach (Transform t in instance.GetComponentsInChildren<Transform>()) {
+                if (t.name.ToLower().Contains("bust") || t.name.ToLower().Contains("breast")) {
+                    t.localScale = new Vector3(boneScale, boneScale, boneScale);
                 }
             }
 
             if (vrmInstance != null) { vrmInstance.Runtime.Process(); }
 
-            string filename = outputFolder + "vroid_" + i.ToString("D4") + ".obj";
+            string id = "vroid_" + i.ToString("D4");
+            string filename = outputFolder + id + ".obj";
+            
+            // Record metadata: [Waist, Shoulder, ChestDepth, ArmLength, BustSize]
+            // We only vary BustSize (index 4)
+            metadata[id] = new float[] { 0.0f, 0.0f, 0.0f, 0.0f, bustVal };
+
             Vector3 currentAnchorPos = GetHipVertexPosition(instance);
             Vector3 shift = currentAnchorPos - baseAnchorPos;
             ExportUnifiedOBJ(instance, filename, shift);
         }
+
+        // Save Metadata
+        string jsonPath = outputFolder + "vroid_metadata.json";
+        StringBuilder jsonSb = new StringBuilder();
+        jsonSb.AppendLine("{");
+        int countIdx = 0;
+        foreach (var entry in metadata) {
+            jsonSb.Append($"  \"{entry.Key}\": [{entry.Value[0]:F4}, {entry.Value[1]:F4}, {entry.Value[2]:F4}, {entry.Value[3]:F4}, {entry.Value[4]:F4}]");
+            if (++countIdx < metadata.Count) jsonSb.AppendLine(",");
+            else jsonSb.AppendLine();
+        }
+        jsonSb.AppendLine("}");
+        File.WriteAllText(jsonPath, jsonSb.ToString());
 
         DestroyImmediate(instance);
         if (Application.isBatchMode) EditorApplication.Exit(0);

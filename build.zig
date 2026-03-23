@@ -251,7 +251,19 @@ pub fn build(b: *std.Build) void {
     vae_re_exe.root_module.addImport("kan", kan_mod);
     b.installArtifact(vae_re_exe);
 
-    // 7. RUN COMMAND
+    // 7. CORE BRIDGE (FFI)
+    const core_ext = b.addSharedLibrary(.{
+        .name = "moontide_core",
+        .root_source_file = b.path("src/core/extension.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
+        .optimize = optimize,
+    });
+    core_ext.linkLibC();
+    core_ext.addIncludePath(b.path("src/core"));
+    core_ext.addIncludePath(b.path("sdk"));
+    b.installArtifact(core_ext);
+
+    // 8. RUN COMMAND
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
