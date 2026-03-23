@@ -108,15 +108,20 @@ pub fn main() !void {
 
     var f_idx: usize = 0;
     while (f_idx < base_faces.items.len) {
-        const chunk_faces = @min(base_faces.items.len - f_idx, batch_size / 3);
-        const chunk_points = chunk_faces * 3;
+        const remaining = base_faces.items.len - f_idx;
+        const limit = batch_size / 3;
+        const chunk_faces = @min(remaining, limit);
+        if (chunk_faces == 0) break;
+        const cp: usize = chunk_faces;
+        const chunk_points = cp + cp + cp;
         
         for (0..chunk_faces) |i| {
             const face = base_faces.items[f_idx + i];
             for (0..3) |j| {
                 const uv = if (base_uvs.items.len > face.vt_idx[j]) base_uvs.items[face.vt_idx[j]] else Vec2{ .u = 0, .v = 0 };
-                activations[0][(i * 3 + j) * 2 + 0] = uv.u;
-                activations[0][(i * 3 + j) * 2 + 1] = uv.v;
+                const base_idx = (i * 3 + j) * 2;
+                activations[0][base_idx + 0] = uv.u;
+                activations[0][base_idx + 1] = uv.v;
                 out_uvs[(f_idx + i) * 3 + j] = uv;
             }
         }

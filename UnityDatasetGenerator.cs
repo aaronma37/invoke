@@ -33,17 +33,7 @@ public class DatasetGenerator : EditorWindow
         instance.transform.localScale = Vector3.one;
         Vector3 baseAnchorPos = GetHipVertexPosition(instance);
 
-        Debug.Log("--- Starting High-Quality Unified Dataset Generation (Full SMR Debug) ---");
-
-        // DEBUG: Find which SMR actually has BlendShapes
-        foreach (var smr in allSmrs) {
-            if (smr.sharedMesh.blendShapeCount > 0) {
-                Debug.Log($"SMR '{smr.name}' has {smr.sharedMesh.blendShapeCount} BlendShapes. Listing them:");
-                for (int b = 0; b < smr.sharedMesh.blendShapeCount; b++) {
-                    Debug.Log($"  [{smr.name}] {b}: {smr.sharedMesh.GetBlendShapeName(b)}");
-                }
-            }
-        }
+        Debug.Log("--- Starting Torso-Focused Dataset Generation ---");
 
         for (int i = 0; i < count; i++)
         {
@@ -52,27 +42,11 @@ public class DatasetGenerator : EditorWindow
             instance.transform.rotation = Quaternion.identity;
 
             Vector3 identity = Vector3.one;
-            SetBoneScale(anim, HumanBodyBones.Head, identity);
-            SetBoneScale(anim, HumanBodyBones.Neck, identity);
-            SetBoneScale(anim, HumanBodyBones.Hips, identity);
-            SetBoneScale(anim, HumanBodyBones.Spine, identity);
-            SetBoneScale(anim, HumanBodyBones.UpperChest, identity);
-            SetBoneScale(anim, HumanBodyBones.LeftShoulder, identity);
-            SetBoneScale(anim, HumanBodyBones.RightShoulder, identity);
-            SetBoneScale(anim, HumanBodyBones.LeftUpperArm, identity);
-            SetBoneScale(anim, HumanBodyBones.RightUpperArm, identity);
-            SetBoneScale(anim, HumanBodyBones.LeftLowerArm, identity);
-            SetBoneScale(anim, HumanBodyBones.RightLowerArm, identity);
-            SetBoneScale(anim, HumanBodyBones.LeftHand, identity);
-            SetBoneScale(anim, HumanBodyBones.RightHand, identity);
-            SetBoneScale(anim, HumanBodyBones.LeftUpperLeg, identity);
-            SetBoneScale(anim, HumanBodyBones.RightUpperLeg, identity);
-            SetBoneScale(anim, HumanBodyBones.LeftLowerLeg, identity);
-            SetBoneScale(anim, HumanBodyBones.RightLowerLeg, identity);
-            SetBoneScale(anim, HumanBodyBones.LeftFoot, identity);
-            SetBoneScale(anim, HumanBodyBones.RightFoot, identity);
-            SetBoneScale(anim, HumanBodyBones.LeftToes, identity);
-            SetBoneScale(anim, HumanBodyBones.RightToes, identity);
+            // Reset all bones
+            foreach (HumanBodyBones bone in System.Enum.GetValues(typeof(HumanBodyBones))) {
+                if (bone == HumanBodyBones.LastBone) continue;
+                SetBoneScale(anim, bone, identity);
+            }
 
             foreach (var smr in allSmrs) {
                 for (int b = 0; b < smr.sharedMesh.blendShapeCount; b++) smr.SetBlendShapeWeight(b, 0);
@@ -104,23 +78,24 @@ public class DatasetGenerator : EditorWindow
             SetBoneScale(anim, HumanBodyBones.LeftLowerArm, armScale);
             SetBoneScale(anim, HumanBodyBones.RightLowerArm, armScale);
 
-            // SAMPLE 8: LARGE BUST (Try bone scaling if BlendShapes fail)
+            // SAMPLE 8: BIG BUST
             if (i == 8) {
-                bool foundBS = false;
                 foreach (var smr in allSmrs) {
                     for (int b = 0; b < smr.sharedMesh.blendShapeCount; b++) {
                         string name = smr.sharedMesh.GetBlendShapeName(b).ToLower();
-                        if (name.Contains("bust") || name.Contains("breast")) {
+                        if (name.Contains("bust_size") || name.Contains("breast_size")) {
                             smr.SetBlendShapeWeight(b, 100.0f);
-                            foundBS = true;
                         }
                     }
                 }
                 
-                // Fallback: Scale the Chest area bones significantly
-                if (!foundBS) {
-                    Transform chest = anim.GetBoneTransform(HumanBodyBones.UpperChest);
-                    if (chest != null) chest.localScale = new Vector3(1.2f, 1.0f, 0.1f); // Tiny depth!
+                // Targeted Bone Scaling: Find specific breast bones in the hierarchy
+                foreach (Transform t in instance.GetComponentsInChildren<Transform>()) {
+                    string name = t.name.ToLower();
+                    // VRoid bones often follow the J_Sec_[L/R]_Bust pattern
+                    if (name.Contains("bust") || name.Contains("breast")) {
+                        t.localScale = new Vector3(1.6f, 1.6f, 1.6f);
+                    }
                 }
             }
 
@@ -157,7 +132,7 @@ public class DatasetGenerator : EditorWindow
     static void ExportUnifiedOBJ(GameObject root, string path, Vector3 shift)
     {
         StringBuilder sb = new StringBuilder();
-        sb.AppendLine("# Moontide VAE-KAN Unified Symmetrical Export");
+        sb.AppendLine("# Moontide VAE-KAN Torso-Only Export");
         SkinnedMeshRenderer[] smrs = root.GetComponentsInChildren<SkinnedMeshRenderer>();
         List<Vector3> allPos = new List<Vector3>();
         List<Vector3> allNorm = new List<Vector3>();
@@ -170,8 +145,7 @@ public class DatasetGenerator : EditorWindow
         {
             var smr = smrs[meshIdx];
             bool isBody = smr.name.ToLower().Contains("body");
-            bool isFace = smr.name.ToLower().Contains("face");
-            if (!isBody && !isFace) continue;
+            if (!isBody) continue; // Skip face, hair, accessories
 
             Mesh mesh = new Mesh();
             smr.BakeMesh(mesh); 
@@ -182,6 +156,15 @@ public class DatasetGenerator : EditorWindow
 
             for (int v = 0; v < vertices.Length; v++) {
                 Vector3 worldV = smr.transform.TransformPoint(vertices[v]) - shift;
+                
+                // --- CLIPPING LOGIC ---
+                // Remove Head (above neck)
+                if (worldV.y > 1.42f) { meshMap[v] = -1; continue; }
+                // Remove Feet (below ankles)
+                if (worldV.y < 0.15f) { meshMap[v] = -1; continue; }
+                // Remove Hands (beyond wrists)
+                if (Mathf.Abs(worldV.x) > 0.65f && worldV.y > 0.8f) { meshMap[v] = -1; continue; }
+
                 Vector3 worldN = smr.transform.TransformDirection(normals[v]);
                 Vector3Int key = new Vector3Int(Mathf.RoundToInt(worldV.x / epsP), Mathf.RoundToInt(worldV.y / epsP), Mathf.RoundToInt(worldV.z / epsP));
                 if (!weldMap.TryGetValue(key, out int idx)) {
@@ -189,9 +172,7 @@ public class DatasetGenerator : EditorWindow
                     weldMap[key] = idx;
                     allPos.Add(worldV);
                     allNorm.Add(worldN);
-                    Vector2 uv = uvs[v];
-                    if (isFace) uv.x += 1.0f; 
-                    allUV.Add(uv);
+                    allUV.Add(uvs[v]);
                 }
                 meshMap[v] = idx;
             }
@@ -199,7 +180,17 @@ public class DatasetGenerator : EditorWindow
             for (int sub = 0; sub < mesh.subMeshCount; sub++) {
                 if (sub < smr.sharedMaterials.Length && !smr.sharedMaterials[sub].name.ToUpper().Contains("SKIN")) continue;
                 int[] tris = mesh.GetTriangles(sub);
-                for (int t = 0; t < tris.Length; t++) allTris.Add(meshMap[tris[t]]);
+                for (int t = 0; t < tris.Length; t += 3) {
+                    int i1 = meshMap[tris[t]];
+                    int i2 = meshMap[tris[t+1]];
+                    int i3 = meshMap[tris[t+2]];
+                    // Only add triangle if all three vertices are valid (not clipped)
+                    if (i1 != -1 && i2 != -1 && i3 != -1) {
+                        allTris.Add(i1);
+                        allTris.Add(i2);
+                        allTris.Add(i3);
+                    }
+                }
             }
             DestroyImmediate(mesh);
         }

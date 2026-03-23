@@ -26,3 +26,4 @@ venv/
 
 # Artifacts
 artifacts/datasets/vroid_batch_pcb/*
+artifacts/*

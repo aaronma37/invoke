@@ -27,3 +27,14 @@ $UNITY_EXE -batchmode -nographics \
 
 echo ""
 echo "Harvest Complete! Check $UNITY_PROJECT_DIR/Dataset_Output/"
+
+echo "--- Starting Post-Processing (Clipping & Cleaning) ---"
+OUTPUT_DIR="artifacts/raw/vroid_batch"
+mkdir -p "$OUTPUT_DIR"
+
+for f in "$UNITY_PROJECT_DIR/Dataset_Output/"vroid_*.obj; do
+    base=$(basename "$f")
+    python3 tools/crop_mesh.py "$f" "$OUTPUT_DIR/$base"
+done
+
+echo "Post-Processing Complete! Cleaned models are in $OUTPUT_DIR"

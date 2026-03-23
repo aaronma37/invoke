@@ -6,8 +6,8 @@ local shader = require("vulkan.shader")
 local swapchain = require("vulkan.swapchain")
 local image = require("vulkan.image")
 local command = require("vulkan.command")
-package.path = package.path .. ";extensions/mooncrust/?.lua"
-local loader = require("examples.27_obj_viewer.loader")
+package.path = package.path .. ";projects/obj_viewer/?.lua;extensions/mooncrust/?.lua"
+local loader = require("loader")
 local input = require("mc.input")
 local sdl = require("vulkan.sdl")
 local bit = require("bit")
@@ -18,17 +18,20 @@ local M = {
     cam_dist = 3.0,
     cam_yaw = 0,
     cam_pitch = 0.5,
-    target = {0, 0.8, 0} -- Default for human height
+    target = {0, 0.8, 0},
+    wireframe = false,
+    has_faces = true
 }
 
-local device, queue, sw, pipe_layout, graphics_pipe
+local device, queue, sw, pipe_layout, graphics_pipe, wireframe_pipe
 local vertex_buffer, vertex_count, depth_img
 local cb, image_available_sem, frame_fence
 
 function M.init()
-    local obj_path = _ARGS[2] or "artifacts/eval/bunny_gpu_full_displaced.obj"
-    print("--- OBJ Viewer ---")
+    local obj_path = _ARGS[2] or "artifacts/eval/vroid_0000_to_0008_gpu_recon.obj"
+    print("--- OBJ Viewer (Enhanced) ---")
     print("Viewing: " .. obj_path)
+    print("Hotkeys: W/S (Zoom), Arrows/Mouse (Orbit), M (Toggle Wireframe)")
     
     local instance = vulkan.get_instance()
     local physical_device = vulkan.get_physical_device()
@@ -38,8 +41,9 @@ function M.init()
     sw = swapchain.new(instance, physical_device, device, _G._SDL_WINDOW)
 
     -- 1. Load Model
-    local data, count = loader.load(obj_path)
+    local data, count, has_faces = loader.load(obj_path)
     vertex_count = count
+    M.has_faces = has_faces
     vertex_buffer = mc.buffer(ffi.sizeof(data), "vertex", data)
 
     -- Auto-center
@@ -70,7 +74,7 @@ function M.init()
     local v_mod = shader.create_module(device, shader.compile_glsl(io.open("projects/obj_viewer/viewer.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT))
     local f_mod = shader.create_module(device, shader.compile_glsl(io.open("projects/obj_viewer/viewer.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT))
 
-    graphics_pipe = pipeline.create_graphics_pipeline(device, pipe_layout, v_mod, f_mod, { 
+    local pipe_opts = { 
         vertex_binding = ffi.new("VkVertexInputBindingDescription[1]", {{ binding = 0, stride = 36, inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX }}),
         vertex_attributes = ffi.new("VkVertexInputAttributeDescription[3]", {
             { location = 0, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 0 },
@@ -78,8 +82,19 @@ function M.init()
             { location = 2, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 24 }
         }),
         depth_test = true, depth_write = true, depth_format = depth_format,
-        cull_mode = vk.VK_CULL_MODE_NONE -- Some generated meshes might have flipped normals
-    })
+        cull_mode = vk.VK_CULL_MODE_NONE,
+        color_formats = { sw.format }
+    }
+    
+    if not M.has_faces then
+        pipe_opts.topology = vk.VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+        graphics_pipe = pipeline.create_graphics_pipeline(device, pipe_layout, v_mod, f_mod, pipe_opts)
+        wireframe_pipe = graphics_pipe -- No wireframe for point cloud
+    else
+        graphics_pipe = pipeline.create_graphics_pipeline(device, pipe_layout, v_mod, f_mod, pipe_opts)
+        pipe_opts.polygon_mode = vk.VK_POLYGON_MODE_LINE
+        wireframe_pipe = pipeline.create_graphics_pipeline(device, pipe_layout, v_mod, f_mod, pipe_opts)
+    end
 
     -- 4. Sync
     local pool = command.create_pool(device, family)
@@ -119,6 +134,12 @@ function M.update()
     -- Zoom
     if input.key_down(input.SCANCODE_W) then M.cam_dist = math.max(M.cam_dist - 0.1, 0.1) end
     if input.key_down(input.SCANCODE_S) then M.cam_dist = M.cam_dist + 0.1 end
+
+    -- Wireframe Toggle
+    if input.key_pressed(input.SCANCODE_M) then 
+        M.wireframe = not M.wireframe 
+        print("Wireframe/Point: " .. (M.wireframe and "ON" or "OFF"))
+    end
 
     local cam_x = M.target[1] + M.cam_dist * math.cos(M.cam_pitch) * math.sin(M.cam_yaw)
     local cam_y = M.target[2] + M.cam_dist * math.sin(M.cam_pitch)
@@ -169,7 +190,9 @@ function M.update()
     vk.vkCmdBeginRendering(cb, render_info)
     vk.vkCmdSetViewport(cb, 0, 1, ffi.new("VkViewport", { width=sw.extent.width, height=sw.extent.height, maxDepth=1 }))
     vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { extent=sw.extent }))
-    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipe)
+    
+    local active_pipe = M.wireframe and wireframe_pipe or graphics_pipe
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, active_pipe)
     
     local offsets = ffi.new("VkDeviceSize[1]", {0})
     vk.vkCmdBindVertexBuffers(cb, 0, 1, ffi.new("VkBuffer[1]", {vertex_buffer.handle}), offsets)

@@ -12,7 +12,6 @@ local M = {}
 ffi.cdef[[
     typedef struct { float v0[4], v1[4], v2[4], unused[4]; } Triangle;
     typedef struct { float u, v, z_zero, sdf, r, g, b, roughness, metallic; } PointSample;
-    typedef struct { float origin[4]; float direction[4]; } RayQuery;
 ]]
 
 function M.init()
@@ -20,7 +19,7 @@ function M.init()
     local output_path = _ARGS[3] or "artifacts/datasets/bunny_gpu.pcb"
     local base_path = _ARGS[4] or "artifacts/raw/base_sphere_05.obj"
     
-    print("--- GPU UV Sampler ---")
+    print("--- GPU UV Sampler (Fixed Layout) ---")
     print("Target: " .. target_path)
     print("Base:   " .. base_path)
 
@@ -38,7 +37,9 @@ function M.init()
     
     -- 2. Prepare Buffers
     local tri_buf = mc.buffer(num_target_tris * 64, "storage", nil, false)
-    local query_buf = mc.buffer(num_queries * 32, "storage", nil, false)
+    local pos_buf = mc.buffer(num_queries * 16, "storage", nil, false)
+    local norm_buf = mc.buffer(num_queries * 16, "storage", nil, false)
+    local uv_buf = mc.buffer(num_queries * 8, "storage", nil, false)
     local sample_buf = mc.buffer(num_queries * 36, "storage", nil, false)
     local down_buf = mc.buffer(num_queries * 36, "storage", nil, true)
     
@@ -55,63 +56,39 @@ function M.init()
     end
     tri_buf:upload(tri_data)
 
-    -- Upload queries and initial samples
-    local query_data = ffi.new("RayQuery[?]", num_queries)
-    local sample_data = ffi.new("PointSample[?]", num_queries)
+    -- Upload base data
+    local pos_data = ffi.new("float[?]", num_queries * 4)
+    local norm_data = ffi.new("float[?]", num_queries * 4)
+    local uv_data = ffi.new("float[?]", num_queries * 2)
     for i=0, num_queries-1 do
         local vert = base_verts_raw[i+1]
-        
-        query_data[i].origin[0] = vert.pos[1]
-        query_data[i].origin[1] = vert.pos[2]
-        query_data[i].origin[2] = vert.pos[3]
-        query_data[i].origin[3] = 1.0
-        
-        -- Ray direction is the vertex normal
-        local nx, ny, nz = vert.normal[1], vert.normal[2], vert.normal[3]
-        local mag = math.sqrt(nx*nx + ny*ny + nz*nz)
-        if mag < 1e-6 then 
-            -- Fallback to normalized position (centered at origin)
-            nx, ny, nz = vert.pos[1], vert.pos[2], vert.pos[3]
-            mag = math.sqrt(nx*nx + ny*ny + nz*nz)
-            if mag < 1e-6 then nx, ny, nz, mag = 0, 1, 0, 1 end
-        end
-        query_data[i].direction[0] = nx / mag
-        query_data[i].direction[1] = ny / mag
-        query_data[i].direction[2] = nz / mag
-        query_data[i].direction[3] = 0.0
-        
-        sample_data[i].u = vert.uv[1]
-        sample_data[i].v = vert.uv[2]
-        sample_data[i].z_zero = 0.0
-        sample_data[i].sdf = 0.0
-        sample_data[i].r, sample_data[i].g, sample_data[i].b = 0.5, 0.5, 0.5
-        sample_data[i].roughness = 0.5
-        sample_data[i].metallic = 0.0
+        pos_data[i*4+0], pos_data[i*4+1], pos_data[i*4+2], pos_data[i*4+3] = vert.pos[1], vert.pos[2], vert.pos[3], 1.0
+        norm_data[i*4+0], norm_data[i*4+1], norm_data[i*4+2], norm_data[i*4+3] = vert.normal[1], vert.normal[2], vert.normal[3], 0.0
+        uv_data[i*2+0], uv_data[i*2+1] = vert.uv[1], vert.uv[2]
     end
-    query_buf:upload(query_data)
-    sample_buf:upload(sample_data)
-
-    for i=0, 4 do
-        print(string.format("Query %d: pos=(%.3f, %.3f, %.3f) dir=(%.3f, %.3f, %.3f)", i, 
-            query_data[i].origin[0], query_data[i].origin[1], query_data[i].origin[2],
-            query_data[i].direction[0], query_data[i].direction[1], query_data[i].direction[2]))
-    end
+    pos_buf:upload(pos_data)
+    norm_buf:upload(norm_data)
+    uv_buf:upload(uv_data)
 
     -- 3. Pipeline Setup
     local l = descriptors.create_layout(d, {
         {binding=0, type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages=vk.VK_SHADER_STAGE_COMPUTE_BIT},
         {binding=1, type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages=vk.VK_SHADER_STAGE_COMPUTE_BIT},
-        {binding=2, type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages=vk.VK_SHADER_STAGE_COMPUTE_BIT}
+        {binding=2, type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages=vk.VK_SHADER_STAGE_COMPUTE_BIT},
+        {binding=3, type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages=vk.VK_SHADER_STAGE_COMPUTE_BIT},
+        {binding=4, type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages=vk.VK_SHADER_STAGE_COMPUTE_BIT}
     })
     local ly = pipeline.create_layout(d, {l}, {{stageFlags=vk.VK_SHADER_STAGE_COMPUTE_BIT, offset=0, size=8}})
     
     local comp_src = io.open("projects/uv_sampler_gpu/uv_sampler.comp"):read("*all")
     local p = pipeline.create_compute_pipeline(d, ly, shader.create_module(d, shader.compile_glsl(comp_src, vk.VK_SHADER_STAGE_COMPUTE_BIT)))
     
-    local ds = descriptors.allocate_sets(d, descriptors.create_pool(d, {{type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, count=3}}), {l})[1]
+    local ds = descriptors.allocate_sets(d, descriptors.create_pool(d, {{type=vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, count=5}}), {l})[1]
     descriptors.update_buffer_set(d, ds, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, tri_buf.handle, 0, tri_buf.size)
-    descriptors.update_buffer_set(d, ds, 1, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, query_buf.handle, 0, query_buf.size)
-    descriptors.update_buffer_set(d, ds, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sample_buf.handle, 0, sample_buf.size)
+    descriptors.update_buffer_set(d, ds, 1, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, pos_buf.handle, 0, pos_buf.size)
+    descriptors.update_buffer_set(d, ds, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, norm_buf.handle, 0, norm_buf.size)
+    descriptors.update_buffer_set(d, ds, 3, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, uv_buf.handle, 0, uv_buf.size)
+    descriptors.update_buffer_set(d, ds, 4, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sample_buf.handle, 0, sample_buf.size)
 
     -- 4. Dispatch
     local cb = command.allocate_buffers(d, command.create_pool(d, family), 1)[1]

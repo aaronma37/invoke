@@ -46,12 +46,9 @@ def main():
 
     # 2. Sample
     print("--- Phase 2: Sampling ---")
-    if args.gpu:
-        env = os.environ.copy()
-        env["SDL_VIDEODRIVER"] = "offscreen"
-        run_command(["./extensions/mooncrust/build/mooncrust", "projects/uv_sampler_gpu", args.target, pcb_path, base_obj], env=env)
-    else:
-        run_command(["./zig-out/bin/uv-sampler", args.target, pcb_path, base_obj])
+    env = os.environ.copy()
+    env["SDL_VIDEODRIVER"] = "offscreen"
+    run_command(["./extensions/mooncrust/build/mooncrust", "projects/uv_sampler_gpu", args.target, pcb_path, base_obj], env=env)
     
     # 3. Train
     print("--- Phase 3: Training ---")
