@@ -13,6 +13,7 @@ ffi.cdef[[
     float* manifold_get_coeffs(ManifoldNetwork_t handle);
     void manifold_set_coeffs(ManifoldNetwork_t handle, const float* data, size_t count);
     void manifold_set_topology(ManifoldNetwork_t handle, uint32_t topo_type);
+    void manifold_make_identity(ManifoldNetwork_t handle);
 ]]
 
 -- --- COMPOSER CLASS ---
@@ -32,11 +33,11 @@ function Composer.new(recipe_path, registry)
     
     -- Root Identity Transform
     local root_transform = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }
-    self:compile_node(self.recipe.root, nil, root_transform)
+    self:compile_node(self.recipe.root, nil, root_transform, 0.0)
     return self
 end
 
-function Composer:compile_node(node_def, parent_coeffs, world_transform)
+function Composer:compile_node(node_def, parent_coeffs, world_transform, cumulative_z)
     local gen_info = self.registry[node_def.generator]
     if not gen_info then error("Generator not found: " .. node_def.generator) end
     
@@ -54,14 +55,17 @@ function Composer:compile_node(node_def, parent_coeffs, world_transform)
     local topo_map = { open = 0, periodic_u = 1, periodic_uv = 2, capped = 3 }
     lib.manifold_set_topology(handle, topo_map[gen_info.topology_type] or 0)
 
+    -- HARDENED: Functional Injection with Cumulative Height Offset
     if gen_info.type == "functional" then
+        lib.manifold_make_identity(handle)
         local def_path = "definitions/" .. gen_info.generator_id:gsub("^gen_", ""):gsub("_v%d+$", "") .. ".lua"
         local def = dofile(def_path)
         local c_data = ffi.new("float[?]", num_coeffs * num_coeffs * 3)
         for v = 0, num_coeffs - 1 do
             for u = 0, num_coeffs - 1 do
                 local u_val, v_val = u / (num_coeffs - 1), v / (num_coeffs - 1)
-                local x, y, z = def.evaluate(u_val, v_val, {0.5, 1.0})
+                -- Latents: [Radius, Height, OffsetZ]
+                local x, y, z = def.evaluate(u_val, v_val, {0.5, 1.0, cumulative_z})
                 local idx = (v * num_coeffs + u) * 3
                 c_data[idx], c_data[idx+1], c_data[idx+2] = x, y, z
             end
@@ -70,17 +74,10 @@ function Composer:compile_node(node_def, parent_coeffs, world_transform)
     end
 
     if parent_coeffs then
-        local socket_type = (node_def.child_socket == "bottom") and 1 or 0
-        lib.manifold_set_socket(handle, socket_type, ffi.cast("const float*", parent_coeffs), num_coeffs)
+        lib.manifold_set_socket(handle, 1, ffi.cast("const float*", parent_coeffs), num_coeffs)
     end
     
-    local node = { 
-        id = node_def.id, 
-        handle = handle, 
-        topology = top_dims, 
-        num_layers = num_layers,
-        world_transform = world_transform
-    }
+    local node = { id = node_def.id, handle = handle, topology = top_dims, num_layers = num_layers, world_transform = world_transform }
     table.insert(self.nodes, node)
     
     if node_def.children then
@@ -88,13 +85,10 @@ function Composer:compile_node(node_def, parent_coeffs, world_transform)
         local top_row_offset = (num_coeffs - 1) * num_coeffs * 3
         local top_row_coeffs = my_coeffs + top_row_offset
         
-        -- Calculate next transform (simple stacking for test)
-        local next_transform = {}
-        for i=1,16 do next_transform[i] = world_transform[i] end
-        next_transform[12] = next_transform[12] + 1.0 -- Translate Z + 1
-        
         for _, child_def in ipairs(node_def.children) do
-            self:compile_node(child_def, top_row_coeffs, next_transform)
+            -- Increment cumulative height for the next segment
+            local next_z = cumulative_z + (child_def.offset_z or 1.0)
+            self:compile_node(child_def, top_row_coeffs, world_transform, next_z)
         end
     end
 end
@@ -107,10 +101,9 @@ function Composer:evaluate(resolution)
     for v = 0, resolution - 1 do
         for u = 0, resolution - 1 do
             local idx = (v * resolution + u) * 2
-            inputs[idx], inputs[idx+1] = u / (resolution - 1), v / (resolution - 1)
+            inputs[idx], inputs[idx + 1] = u / (resolution - 1), v / (resolution - 1)
         end
     end
-    
     for i, node in ipairs(self.nodes) do
         local offset = (i - 1) * batch_size * 3
         local acts = ffi.new("float*[?]", #node.topology)
@@ -119,8 +112,9 @@ function Composer:evaluate(resolution)
         local local_buffer = ffi.new("float[?]", batch_size * 3)
         lib.manifold_forward_pinned(node.handle, inputs, acts, local_buffer, batch_size)
         
-        -- APPLY WORLD TRANSFORM
-        local m = node.world_transform
+        -- Since world position is now correctly baked via cumulative_z in coefficients,
+        -- the world transform should be Identity for ALL nodes including Root.
+        local m = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}
         for b = 0, batch_size - 1 do
             local lx, ly, lz = local_buffer[b*3], local_buffer[b*3+1], local_buffer[b*3+2]
             vertex_buffer[offset + b*3 + 0] = lx*m[1] + ly*m[2] + lz*m[3] + m[4]

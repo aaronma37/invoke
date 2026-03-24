@@ -17,13 +17,38 @@ export fn manifold_init(layer_dims: [*]const usize, num_layers: usize, num_coeff
     return @as(ManifoldNetwork_t, @ptrCast(net));
 }
 
+/// HARDENED: For functional primitives, we force the hidden layers to be Identity.
+/// This prevents random weight noise from distorting the UV mapping.
+export fn manifold_make_identity(handle: ManifoldNetwork_t) void {
+    const net = @as(*ManifoldNetwork, @ptrCast(@alignCast(handle)));
+    
+    for (net.hidden_layers) |*layer| {
+        @memset(layer.coeffs, 0.0);
+        
+        // In a KAN, the Silu activation has a 1/in_dim scaling.
+        // To make a first-layer identity for UV [0, 1]:
+        if (layer.in_dim >= 2 and layer.out_dim >= 2) {
+            const out_padded = layer.out_dim_padded;
+            const n_coeffs = layer.num_coeffs;
+            
+            // Set U -> U' and V -> V'
+            for (0..2) |i| {
+                const layer_base = i * n_coeffs * out_padded;
+                for (0..n_coeffs) |k| {
+                    const val = @as(f32, @floatFromInt(k)) / @as(f32, @floatFromInt(n_coeffs - 1));
+                    layer.coeffs[layer_base + k * out_padded + i] = val * @as(f32, @floatFromInt(layer.in_dim));
+                }
+            }
+        }
+    }
+}
+
 export fn manifold_deinit(handle: ManifoldNetwork_t) void {
     const net = @as(*ManifoldNetwork, @ptrCast(@alignCast(handle)));
     net.deinit();
     net.allocator.destroy(net);
 }
 
-/// HARDENED: Set the topology type (open, periodic_u, etc.)
 export fn manifold_set_topology(handle: ManifoldNetwork_t, topo_type: u32) void {
     const net = @as(*ManifoldNetwork, @ptrCast(@alignCast(handle)));
     net.topology_type = switch (topo_type) {

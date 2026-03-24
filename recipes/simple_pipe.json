@@ -10,6 +10,7 @@
         "generator": "gen_cylinder_v1",
         "parent_socket": "top",
         "child_socket": "bottom",
+        "offset_z": 1.0,
         "params": { "radius": 0.3, "height": 0.8 }
       }
     ]
