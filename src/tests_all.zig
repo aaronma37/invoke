@@ -28,6 +28,9 @@ test {
     _ = @import("core/kan_spline.zig");
     _ = @import("core/kan_network.zig");
     _ = @import("core/kan_trainer.zig");
+    _ = @import("core/tensor_spline.zig");
+    _ = @import("../projects/manifold_composer/manifold_kan.zig");
+    _ = @import("../projects/manifold_composer/ffi_test.zig");
     _ = @import("tests/pipeline_test.zig");
     _ = @import("tests/integrity_test.zig");
 }

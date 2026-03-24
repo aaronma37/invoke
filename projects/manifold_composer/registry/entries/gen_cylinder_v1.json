@@ -1,0 +1,17 @@
+{
+  "generator_id": "gen_cylinder_v1",
+  "type": "neural",
+  "topology_type": "open",
+  "definition": "projects/manifold_composer/registry/models/gen_cylinder_v1.kan",
+  "topology": "[2, 32, 32, 6]",
+  "sockets": {
+    "bottom": { "type": "input", "uv_edge": "v=0" },
+    "top": { "type": "output", "uv_edge": "v=1" }
+  },
+  "forge_params": {
+    "definition": "definitions/cylinder.lua",
+    "epochs": 50,
+    "samples": 10000,
+    "timestamp": "2026-03-24T06:09:15Z"
+  }
+}

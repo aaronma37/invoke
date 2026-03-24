@@ -16,108 +16,59 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     if (args.len < 2) {
-        std.debug.print("Usage: {s} <dataset.pcb> [epochs] [batch_size] [learning_rate] [--task sdf|displacement]\n", .{args[0]});
+        std.debug.print("Usage: {s} <dataset.pcb> [epochs] [batch_size] [lr] [--topology 2,32,32,6] [--output model.kan]\n", .{args[0]});
         return;
     }
 
     const pcb_path = args[1];
-    const epochs = if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 10000;
-    const batch_size = if (args.len > 3) try std.fmt.parseInt(usize, args[3], 10) else 10000;
+    const epochs = if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 1000;
+    const batch_size = if (args.len > 3) try std.fmt.parseInt(usize, args[3], 10) else 1024;
     const lr = if (args.len > 4) try std.fmt.parseFloat(f32, args[4]) else 0.001;
 
-    var task: kan.kan_trainer.TaskType = .sdf;
-    var use_eikonal = true;
-    var custom_model_path: ?[]const u8 = null;
-    var multi_mode = false;
-    var latents_path: ?[]const u8 = null;
+    var topology_list = std.ArrayList(usize).init(allocator);
+    defer topology_list.deinit();
+    
+    var output_path: ?[]const u8 = null;
 
-    var arg_i: usize = 0;
-    while (arg_i < args.len) : (arg_i += 1) {
-        const arg = args[arg_i];
-        if (std.mem.eql(u8, arg, "--no-eikonal")) use_eikonal = false;
-        if (std.mem.eql(u8, arg, "displacement")) task = .displacement;
-        if (std.mem.eql(u8, arg, "--multi")) {
-            multi_mode = true;
-            if (arg_i + 1 < args.len) {
-                arg_i += 1;
-                latents_path = args[arg_i];
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--topology")) {
+            i += 1;
+            var it = std.mem.splitSequence(u8, args[i], ",");
+            while (it.next()) |part| {
+                try topology_list.append(try std.fmt.parseInt(usize, part, 10));
             }
         }
-        if (std.mem.eql(u8, arg, "--output")) {
-            if (arg_i + 1 < args.len) {
-                arg_i += 1;
-                custom_model_path = args[arg_i];
-            }
+        if (std.mem.eql(u8, args[i], "--output")) {
+            i += 1;
+            output_path = args[i];
         }
     }
 
-    const model_path = custom_model_path orelse if (task == .sdf) "model_sdf.kan" else "model_disp.kan";
-
-    std.debug.print("Task: {s}\n", .{@tagName(task)});
-    std.debug.print("Model Path: {s}\n", .{model_path});
-
-    if (multi_mode) {
-        if (latents_path == null) {
-            std.debug.print("Error: --multi requires path to latents.json\n", .{});
-            return;
-        }
-        std.debug.print("Multi-Model Mode: Loading from {s} with latents {s}\n", .{pcb_path, latents_path.?});
-        var loader = try kan.kan_dataloader.MultiDataLoader.init(allocator, pcb_path, latents_path.?);
-        defer loader.deinit();
-
-        const latent_dim = loader.models[0].label.len;
-        const dims_disp = [_]usize{ 2 + latent_dim, 256, 3 };
-        
-        try runTraining(allocator, loader, &dims_disp, epochs, batch_size, lr, model_path, task);
-        } else {
-        std.debug.print("Loading dataset: {s}...\n", .{pcb_path});
-        var loader = try DataLoader.init(allocator, pcb_path);
-        defer loader.deinit();
-
-        const dims_sdf = [_]usize{ 3, 64, 64, 1 };
-        const dims_disp = [_]usize{ 2, 256, 3 };
-        const dims: []const usize = if (task == .sdf) &dims_sdf else &dims_disp;
-
-        try runTraining(allocator, loader, dims, epochs, batch_size, lr, model_path, task);
-        }
-        }
-
-        fn runTraining(allocator: mem.Allocator, loader: anytype, dims: []const usize, epochs: usize, batch_size: usize, lr: f32, model_path: []const u8, task: kan.kan_trainer.TaskType) !void {
-        const num_coeffs = 32;
-    
-    // Resume if model exists, otherwise init fresh
-    var trainer: *KanTrainer = undefined;
-    const model_exists = if (std.fs.cwd().access(model_path, .{})) |_| true else |_| false;
-    
-    if (model_exists) {
-        std.debug.print("Resuming from existing {s}...\n", .{model_path});
-        const net = try KanNetwork.loadModel(allocator, model_path);
-        trainer = try KanTrainer.initWithNet(allocator, net, batch_size, task);
-    } else {
-        std.debug.print("Initializing new KAN: {d} -> ... -> {d}\n", .{dims[0], dims[dims.len-1]});
-        trainer = try KanTrainer.initFixed(allocator, dims, num_coeffs, batch_size, task);
+    if (topology_list.items.len == 0) {
+        try topology_list.appendSlice(&[_]usize{ 2, 32, 32, 6 });
     }
+
+    const model_path = output_path orelse "manifold.kan";
+
+    std.debug.print("--- Universal Manifold Trainer ---\n", .{});
+    std.debug.print("Dataset: {s}\n", .{pcb_path});
+    std.debug.print("Topology: {any}\n", .{topology_list.items});
+    std.debug.print("Output: {s}\n", .{model_path});
+
+    var loader = try DataLoader.init(allocator, pcb_path);
+    defer loader.deinit();
+
+    try runTraining(allocator, loader, topology_list.items, epochs, batch_size, lr, model_path);
+}
+
+fn runTraining(allocator: mem.Allocator, loader: DataLoader, dims: []const usize, epochs: usize, batch_size: usize, lr: f32, model_path: []const u8) !void {
+    const num_coeffs = 32;
+    const trainer = try KanTrainer.initFixed(allocator, dims, num_coeffs, batch_size, .displacement);
     defer trainer.deinit();
     
-    // Setup Hard Anchor Constraint (Displacement Task Only)
-    if (task == .displacement) {
-        const anchor_uv = try allocator.alloc(f32, 2);
-        // Extract Vertex 0 UV from the first model
-        if (@TypeOf(loader) == DataLoader) {
-            anchor_uv[0] = loader.samples[0].x;
-            anchor_uv[1] = loader.samples[0].y;
-        } else {
-            anchor_uv[0] = loader.models[0].samples[0].x;
-            anchor_uv[1] = loader.models[0].samples[0].y;
-        }
-        trainer.anchor_input = anchor_uv;
-        trainer.lambda_anchor = 500.0; // Extremely high penalty
-        std.debug.print("Anchor Constraint Active: UV=({d:0.4}, {d:0.4})\n", .{anchor_uv[0], anchor_uv[1]});
-    }
-
-    trainer.lambda_shape = 50.0; // 5x more pinning force
-    trainer.lambda_l2 = 0.001; // Smooth out ripples
     trainer.optimizer.learning_rate = lr;
+    trainer.lambda_l2 = 0.0001;
 
     const inputs = try allocator.alloc(f32, batch_size * dims[0]);
     const targets = try allocator.alloc(f32, batch_size * dims[dims.len-1]);
@@ -126,25 +77,18 @@ pub fn main() !void {
     var prng = std.Random.DefaultPrng.init(@as(u64, @intCast(std.time.timestamp())));
     var best_loss: f32 = 1e10;
 
-    std.debug.print("Starting training for {d} epochs (batch size: {d})...\n", .{epochs, batch_size});
-
     for (0..epochs) |epoch| {
-        // --- COSINE LR DECAY ---
-        const progress = @as(f32, @floatFromInt(epoch)) / @as(f32, @floatFromInt(epochs));
-        const current_lr = 0.0001 + 0.5 * (lr - 0.0001) * (1.0 + @cos(progress * std.math.pi));
-        trainer.optimizer.learning_rate = current_lr;
-
-        loader.getBatch(batch_size, dims[0], dims[dims.len-1], &prng, inputs, targets);        const batch = TrainingBatch{ .inputs = inputs, .targets = targets, .batch_size = batch_size };
+        loader.getBatch(batch_size, dims[0], dims[dims.len-1], &prng, inputs, targets);
+        const batch = TrainingBatch{ .inputs = inputs, .targets = targets, .batch_size = batch_size };
         const loss = try trainer.trainStep(batch);
         
         if (epoch % 100 == 0 or epoch == epochs - 1) {
-            std.debug.print("Epoch {d:5}: Loss = {d:0.6}\r", .{epoch, loss});
-            
+            std.debug.print("Step {d:5}: Loss = {d:0.6}\r", .{epoch, loss});
             if (loss < best_loss) {
                 best_loss = loss;
                 try trainer.net.saveModel(model_path);
             }
         }
     }
-    std.debug.print("\nTraining complete. Best loss: {d:0.6}. Model saved to {s}\n", .{best_loss, model_path});
+    std.debug.print("\nForge Training Complete. Best Loss: {d:0.6}\n", .{best_loss});
 }

@@ -1,0 +1,79 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+struct PointSample {
+    float u, v;
+    float x, y, z;
+    float c1, c2, c3;
+};
+
+// --- INPUTS ---
+layout(std430, binding = 0) buffer CoeffBuffer {
+    float coeffs[]; // [num_v][num_u][3]
+};
+
+// --- OUTPUTS ---
+layout(std430, binding = 1) buffer VertexBuffer {
+    vec3 vertices[];
+};
+
+layout(push_constant) uniform PC {
+    uint num_u;
+    uint num_v;
+    uint res;
+} pc;
+
+// Analytical Piecewise Cubic B-Spline Basis
+vec4 basisAll(float t) {
+    float t2 = t * t;
+    float t3 = t2 * t;
+    return vec4(
+        (1.0 - 3.0*t + 3.0*t2 - t3) / 6.0,
+        (4.0 - 6.0*t2 + 3.0*t3) / 6.0,
+        (1.0 + 3.0*t + 3.0*t2 - 3.0*t3) / 6.0,
+        t3 / 6.0
+    );
+}
+
+void main() {
+    uint u_idx = gl_GlobalInvocationID.x;
+    uint v_idx = gl_GlobalInvocationID.y;
+    
+    if (u_idx >= pc.res || v_idx >= pc.res) return;
+    
+    float u = float(u_idx) / float(pc.res - 1);
+    float v = float(v_idx) / float(pc.res - 1);
+    
+    // B-Spline Evaluation (Tensor Product)
+    vec3 pos = vec3(0.0);
+    
+    // Simple uniform knot mapping for [0, 1]
+    float su = u * float(pc.num_u - 3);
+    float sv = v * float(pc.num_v - 3);
+    
+    int iu = int(floor(su));
+    int iv = int(floor(sv));
+    
+    float tu = su - float(iu);
+    float tv = sv - float(iv);
+    
+    vec4 bu = basisAll(tu);
+    vec4 bv = basisAll(tv);
+    
+    for (int j = 0; j < 4; j++) {
+        int kv = clamp(iv + j, 0, int(pc.num_v - 1));
+        float wv = bv[j];
+        
+        for (int i = 0; i < 4; i++) {
+            int ku = clamp(iu + i, 0, int(pc.num_u - 1));
+            float wu = bu[i];
+            
+            uint c_idx = (kv * pc.num_u + ku) * 3;
+            vec3 val = vec3(coeffs[c_idx], coeffs[c_idx+1], coeffs[c_idx+2]);
+            pos += val * (wu * wv);
+        }
+    }
+    
+    vertices[v_idx * pc.res + u_idx] = pos;
+}

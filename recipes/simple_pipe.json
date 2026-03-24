@@ -1,0 +1,17 @@
+{
+  "name": "Single Weld Test Pipe",
+  "root": {
+    "id": "trunk",
+    "generator": "gen_cylinder_v1",
+    "params": { "radius": 0.5, "height": 1.0 },
+    "children": [
+      {
+        "id": "branch_1",
+        "generator": "gen_cylinder_v1",
+        "parent_socket": "top",
+        "child_socket": "bottom",
+        "params": { "radius": 0.3, "height": 0.8 }
+      }
+    ]
+  }
+}

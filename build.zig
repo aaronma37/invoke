@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
 
     // MODULES
     const core_mod = b.createModule(.{
-        .root_source_file = b.path("src/core/orchestrator.zig"),
+        .root_source_file = b.path("src/core/core.zig"),
     });
     core_mod.addIncludePath(b.path("sdk"));
     core_mod.addIncludePath(b.path("src/core"));
@@ -147,6 +147,23 @@ pub fn build(b: *std.Build) void {
     });
     b.getInstallStep().dependOn(&webgpu_install.step);
 
+    // --- MANIFOLD COMPOSER EXTENSION ---
+    const manifold_ext = b.addSharedLibrary(.{
+        .name = "manifold_ext",
+        .root_source_file = b.path("projects/manifold_composer/manifold_ext.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
+        .optimize = optimize,
+    });
+    manifold_ext.linkLibC();
+    manifold_ext.addIncludePath(b.path("src/core"));
+    manifold_ext.addIncludePath(b.path("sdk"));
+    manifold_ext.root_module.addImport("core", core_mod);
+    
+    const manifold_install = b.addInstallArtifact(manifold_ext, .{
+        .dest_dir = .{ .override = .{ .custom = "../ext" } },
+    });
+    b.getInstallStep().dependOn(&manifold_install.step);
+
     // 6. KAN TRAINER TOOL
     const train_exe = b.addExecutable(.{
         .name = "kan-train",
@@ -212,19 +229,6 @@ pub fn build(b: *std.Build) void {
     check_exe.root_module.addImport("kan", kan_mod);
     b.installArtifact(check_exe);
 
-    // KAN UV SAMPLER TOOL
-    const uv_exe = b.addExecutable(.{
-        .name = "uv-sampler",
-        .root_source_file = b.path("src/tools/sampler_uv.zig"),
-        .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
-        .optimize = optimize,
-    });
-    uv_exe.linkLibC();
-    uv_exe.addIncludePath(b.path("src/core"));
-    uv_exe.addIncludePath(b.path("sdk"));
-    uv_exe.root_module.addImport("kan", kan_mod);
-    b.installArtifact(uv_exe);
-
     // KAN DISPLACED RECONSTRUCTION TOOL
     const dis_exe = b.addExecutable(.{
         .name = "reconstruct-displaced",
@@ -250,6 +254,19 @@ pub fn build(b: *std.Build) void {
     vae_re_exe.addIncludePath(b.path("sdk"));
     vae_re_exe.root_module.addImport("kan", kan_mod);
     b.installArtifact(vae_re_exe);
+
+    // MANIFOLD TO OBJ (Silicon Mesher)
+    const mani_obj_exe = b.addExecutable(.{
+        .name = "manifold-to-obj",
+        .root_source_file = b.path("src/tools/manifold_to_obj.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_model = .native }),
+        .optimize = optimize,
+    });
+    mani_obj_exe.linkLibC();
+    mani_obj_exe.addIncludePath(b.path("src/core"));
+    mani_obj_exe.addIncludePath(b.path("sdk"));
+    mani_obj_exe.root_module.addImport("core", core_mod);
+    b.installArtifact(mani_obj_exe);
 
     // 7. CORE BRIDGE (FFI)
     const core_ext = b.addSharedLibrary(.{
