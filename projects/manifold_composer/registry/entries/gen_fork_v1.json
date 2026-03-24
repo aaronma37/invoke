@@ -1,0 +1,1 @@
+{ "generator_id": "gen_fork_v1", "type": "functional", "topology": "[2, 32, 32, 6]", "topology_type": "open" }

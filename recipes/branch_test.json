@@ -1,0 +1,31 @@
+{
+  "name": "Branching Pipe Test",
+  "root": {
+    "id": "trunk",
+    "generator": "gen_cylinder_v1",
+    "children": [
+      {
+        "id": "junction",
+        "generator": "gen_fork_v1",
+        "child_socket": "bottom",
+        "offset_z": 1.0,
+        "children": [
+          {
+            "id": "branch_left",
+            "generator": "gen_cylinder_v1",
+            "child_socket": "bottom",
+            "offset_z": 1.0,
+            "params": { "radius": 0.3 }
+          },
+          {
+            "id": "branch_right",
+            "generator": "gen_cylinder_v1",
+            "child_socket": "bottom",
+            "offset_z": 1.0,
+            "params": { "radius": 0.3 }
+          }
+        ]
+      }
+    ]
+  }
+}

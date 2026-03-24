@@ -14,13 +14,17 @@ This automatically:
 3. Adds the resulting `.kan` file and its metadata to the **Primitive Generator Registry**.
 
 ## `pipelines/assembly/compose.lua`
-The pipeline for building objects out of Neural and Functional Generators.
+The pipeline for building and validating objects out of Neural and Functional Generators.
 **Usage:**
 ```bash
-luajit pipelines/assembly/compose.lua --recipe=recipes/tree.json
+./extensions/mooncrust/build/mooncrust pipelines/assembly/compose.lua --recipe=recipes/tree.json
 ```
-This automatically:
-1. Parses the JSON graph.
-2. Looks up the generators in the registry.
-3. Calculates the mathematical boundary pins (Welds).
-4. Evaluates the full mesh for rendering or export.
+This automatically parses the JSON graph and applies the mathematical welds in memory.
+
+## `pipelines/assembly/export.lua`
+The pipeline for compiling a recipe into a seamless, watertight OBJ file.
+**Usage:**
+```bash
+./extensions/mooncrust/build/mooncrust pipelines/assembly/export.lua --recipe=recipes/tree.json --output=my_tree.obj
+```
+This performs bit-perfect vertex welding to ensure the output is a single continuous manifold.

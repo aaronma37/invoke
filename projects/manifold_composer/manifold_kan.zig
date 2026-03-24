@@ -50,6 +50,12 @@ pub const ManifoldNetwork = struct {
         self.output_surface.deinit();
     }
 
+    pub fn makeIdentity(self: *ManifoldNetwork) void {
+        for (self.hidden_layers) |*layer| {
+            layer.setToIdentity();
+        }
+    }
+
     pub fn forwardPinned(
         self: *ManifoldNetwork,
         inputs: []const f32,
