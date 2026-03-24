@@ -93,6 +93,28 @@ pub const ManifoldNetwork = struct {
             self.output_surface.evaluate(u, v, is_periodic_u, outputs[b * 3 .. (b + 1) * 3]);
         }
     }
+
+    pub fn backwardPinned(
+        self: *ManifoldNetwork,
+        inputs: []const f32,
+        output_grads: []const f32,
+        batch_size: usize,
+    ) void {
+        const is_periodic_u = (self.topology_type == .periodic_u);
+        
+        // Train only the TensorSurface coefficients for now
+        // coeff_grads for the TensorSurface are its own memory block in a real trainer
+        // But here we'll assume we are accumulating directly for simplicity in testing
+        for (0..batch_size) |b| {
+            const u = inputs[b * 2 + 0];
+            const v = inputs[b * 2 + 1];
+            const grads = output_grads[b * 3 .. (b + 1) * 3];
+            
+            // Note: In a real multi-threaded trainer, we'd use a gradient buffer.
+            // For this unit test verification, we update coeffs directly (SGD-style).
+            self.output_surface.backward(u, v, is_periodic_u, grads, self.output_surface.coeffs);
+        }
+    }
 };
 
 test "ManifoldNetwork: Periodic Closure" {
@@ -119,4 +141,51 @@ test "ManifoldNetwork: Periodic Closure" {
     try std.testing.expectEqual(outputs[0], outputs[3]);
     try std.testing.expectEqual(outputs[1], outputs[4]);
     try std.testing.expectEqual(outputs[2], outputs[5]);
+}
+
+test "ManifoldNetwork: Shape Learning (SGD Sanity)" {
+    const allocator = std.testing.allocator;
+    const dims = [_]usize{ 2, 4 };
+    var net = try ManifoldNetwork.init(allocator, &dims, 8);
+    defer net.deinit();
+
+    // Target: A point at UV(0.5, 0.5) should be at XYZ(10, 20, 30)
+    const input = [_]f32{ 0.5, 0.5 };
+    const target = [_]f32{ 10.0, 20.0, 30.0 };
+    
+    // Train for 100 iterations (Basic SGD)
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        var out = [_]f32{ 0, 0, 0 };
+        // Empty activations for hidden layers (not used in this test)
+        var acts = try allocator.alloc([]f32, 2);
+        acts[0] = try allocator.alloc(f32, 2);
+        acts[1] = try allocator.alloc(f32, 4);
+        defer { for (acts) |a| allocator.free(a); allocator.free(acts); }
+
+        net.forwardPinned(&input, acts, 1, &out);
+        
+        // Loss gradient: (pred - target)
+        const grads = [_]f32{ 
+            (out[0] - target[0]) * 0.1, 
+            (out[1] - target[1]) * 0.1, 
+            (out[2] - target[2]) * 0.1 
+        };
+        
+        // We use a large learning rate (0.1) to see quick convergence
+        net.backwardPinned(&input, &grads, 1);
+    }
+
+    // Verify convergence
+    var final_out = [_]f32{ 0, 0, 0 };
+    var acts_final = try allocator.alloc([]f32, 2);
+    acts_final[0] = try allocator.alloc(f32, 2);
+    acts_final[1] = try allocator.alloc(f32, 4);
+    defer { for (acts_final) |a| allocator.free(a); allocator.free(acts_final); }
+
+    net.forwardPinned(&input, acts_final, 1, &final_out);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 10.0), final_out[0], 0.1);
+    try std.testing.expectApproxEqAbs(@as(f32, 20.0), final_out[1], 0.1);
+    try std.testing.expectApproxEqAbs(@as(f32, 30.0), final_out[2], 0.1);
 }
